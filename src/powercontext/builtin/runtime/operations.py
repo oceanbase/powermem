@@ -37,6 +37,7 @@ from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.runtime.work_handlers import (
     EXPERIENCE_WORK_KIND,
     MEMORY_WORK_KIND,
+    WorkRequester,
     enqueue_memory_work,
 )
 from powercontext.builtin.runtime.work_observability import WorkObserver, refresh_work_queue
@@ -119,7 +120,14 @@ class OperationManager:
 
         return self._database
 
-    async def submit_memory(self, scope_id: str, /, *, limit: int) -> MemoryFlushResult | EnqueueResult:
+    async def submit_memory(
+        self,
+        scope_id: str,
+        /,
+        *,
+        limit: int,
+        requester: WorkRequester | None = None,
+    ) -> MemoryFlushResult | EnqueueResult:
         with self._stage(
             "work.enqueue",
             attributes={
@@ -133,6 +141,7 @@ class OperationManager:
                 limit=limit,
                 max_attempts=self._worker_config.max_attempts,
                 payload_version=self._payload_version,
+                requester=requester,
                 repository=self._repository,
             )
             if span is not None:

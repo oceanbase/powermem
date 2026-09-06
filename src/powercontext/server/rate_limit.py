@@ -16,15 +16,17 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.rate_limit import RateLimitRepository
 from powercontext.http import ErrorDetail, ErrorResponse
-from powercontext.server.context import is_internal_bridge
+from powercontext.server.authz import PrincipalRef
+from powercontext.server.context import current_principal, is_internal_bridge
 from powercontext.server.middleware import is_public_http_path
-from powercontext.server.principal import PrincipalRef, current_principal
 
 _POLICY_ID = "http.default.v1"
 _RATE_LIMIT_EXEMPT_PATHS = frozenset({"/metrics"})
@@ -52,7 +54,7 @@ class SharedRateLimiter:
         async with database.transaction() as connection:
             decision = await self._repository.consume(
                 connection,
-                principal_key=principal.storage_key,
+                principal_key=_principal_key(principal),
                 policy_id=_POLICY_ID,
                 limit=self._requests,
                 window_seconds=self._window_seconds,
@@ -99,6 +101,10 @@ class SharedRateLimitMiddleware:
             or is_public_http_path(scope["path"])
             or scope["path"] in _RATE_LIMIT_EXEMPT_PATHS
         )
+
+
+def _principal_key(principal: PrincipalRef) -> str:
+    return hashlib.sha256(f"{principal.type}\0{principal.id}".encode()).hexdigest()
 
 
 __all__ = ["SharedRateLimitMiddleware", "SharedRateLimiter"]

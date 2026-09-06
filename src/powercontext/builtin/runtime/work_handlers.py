@@ -21,8 +21,9 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.builtin.artifacts.experience import EXPERIENCE_INCUBATION_CURSOR_NAME
@@ -55,6 +56,22 @@ CURRENT_WORK_PAYLOAD_VERSION = 1
 logger = logging.getLogger(__name__)
 
 
+class WorkRequester(BaseModel):
+    """Non-sensitive identity reference carried across async execution."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["user", "service"]
+    id: str = Field(min_length=1, max_length=255)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("requester id must be trimmed")  # noqa: TRY003
+        return value
+
+
 class SourceWindowPayload(BaseModel):
     """Reference-only snapshot of one bounded Source cursor transition."""
 
@@ -65,6 +82,7 @@ class SourceWindowPayload(BaseModel):
     after: int = Field(ge=0)
     through: int = Field(ge=1)
     high_watermark: int = Field(ge=1)
+    requester: WorkRequester | None = None
 
 
 class MemoryWorkDiscoverer:
@@ -307,14 +325,16 @@ class ExperienceWorkHandler:
             sequence, generation = _cursor_position(locked)
             _require_exact_cursor(payload, sequence, generation)
             review = services.review(connection)
+            candidate_ids: list[str] = []
             for plan in plans:
-                await review.propose_experience(
+                candidate = await review.propose_experience(
                     plan.proposal,
                     sources=plan.sources,
                     artifacts=(),
                     target=None,
                     reason=plan.reason,
                 )
+                candidate_ids.append(candidate.candidate_id)
             await services.repositories.cursors.save(
                 connection,
                 claim.scope_id,
@@ -322,7 +342,12 @@ class ExperienceWorkHandler:
                 SourceCursor(sequence=payload.through),
                 expected_generation=None if payload.cursor_generation == 0 else payload.cursor_generation,
             )
-            return _experience_result(payload, candidate_count=len(plans), code="processed")
+            return _experience_result(
+                payload,
+                candidate_count=len(plans),
+                candidate_ids=tuple(candidate_ids),
+                code="processed",
+            )
 
         return PreparedWork(result=None, commit=commit)
 
@@ -402,6 +427,7 @@ async def enqueue_memory_work(
     limit: int,
     max_attempts: int,
     payload_version: int = CURRENT_WORK_PAYLOAD_VERSION,
+    requester: WorkRequester | None = None,
     repository: WorkRepository | None = None,
 ) -> MemoryFlushResult | EnqueueResult:
     """Determine and enqueue one manual Memory window in a short transaction."""
@@ -414,7 +440,13 @@ async def enqueue_memory_work(
             scope,
             SOURCE_WINDOW_TRIGGER_NAME,
         )
-        payload = _window_payload(state_row, high_watermark, SOURCE_WINDOW_TRIGGER_NAME, limit)
+        payload = _window_payload(
+            state_row,
+            high_watermark,
+            SOURCE_WINDOW_TRIGGER_NAME,
+            limit,
+            requester=requester,
+        )
         if payload is None:
             position, _ = _cursor_position(state_row)
             return MemoryFlushResult(
@@ -518,6 +550,8 @@ def _window_payload(
     high_watermark: int,
     cursor_name: str,
     limit: int,
+    *,
+    requester: WorkRequester | None = None,
 ) -> SourceWindowPayload | None:
     state = SourceCursor() if state_row is None else state_row.cursor
     transition = SourceWindowTrigger().activate(
@@ -533,6 +567,7 @@ def _window_payload(
         after=action.after,
         through=action.through,
         high_watermark=high_watermark,
+        requester=requester,
     )
 
 
@@ -558,7 +593,7 @@ def _work_spec(
         scope_id=scope_id,
         lane_key=lane_key,
         logical_key=logical_key,
-        payload=payload.model_dump(mode="json"),
+        payload=payload.model_dump(mode="json", exclude_none=True),
         max_attempts=max_attempts,
     )
 
@@ -606,13 +641,20 @@ def _memory_result(
     return WorkResult(code=code, payload=result.model_dump(mode="json"))
 
 
-def _experience_result(payload: SourceWindowPayload, *, candidate_count: int, code: str) -> WorkResult:
+def _experience_result(
+    payload: SourceWindowPayload,
+    *,
+    candidate_count: int,
+    candidate_ids: tuple[str, ...] = (),
+    code: str,
+) -> WorkResult:
     result = ExperienceIncubationResult(
         previous_cursor=payload.after,
         current_cursor=payload.through,
         high_watermark=payload.high_watermark,
         source_count=payload.through - payload.after,
         candidate_count=candidate_count,
+        candidate_ids=candidate_ids,
     )
     return WorkResult(code=code, payload=result.model_dump(mode="json"))
 
@@ -630,6 +672,7 @@ __all__ = [
     "MemoryWorkDiscoverer",
     "MemoryWorkHandler",
     "SourceWindowPayload",
+    "WorkRequester",
     "enqueue_memory_work",
     "experience_work_spec",
     "memory_work_spec",

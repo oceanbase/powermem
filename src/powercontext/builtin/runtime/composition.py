@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
 
 from pydantic import AnyHttpUrl, JsonValue, SecretStr
+from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 from typing_extensions import override
 
@@ -72,6 +73,7 @@ from powercontext.builtin.persistence.sqlite.experience_index import SQLiteExper
 from powercontext.builtin.persistence.sqlite.memory_index import SQLiteMemoryFTSIndex, SQLiteMemoryVectorIndex
 from powercontext.builtin.persistence.sqlite.profile import SQLiteConfig, SQLiteProfile
 from powercontext.builtin.persistence.tables import BUILTIN_TABLES
+from powercontext.builtin.persistence.work import StoredWork, WorkClaim
 from powercontext.builtin.runtime._scope_cache import ScopeCacheObserver
 from powercontext.builtin.runtime.application import BuiltinRuntime
 from powercontext.builtin.runtime.config import BuiltinConfig, ExternalSkillsConfig, InferenceConfig, RuntimeConfig
@@ -119,6 +121,14 @@ class _RuntimeStorage:
 
 class _SchemaVerifier(Protocol):
     async def verify(self, connection: AsyncConnection, /) -> None: ...
+
+
+class WorkExecutionHooks(Protocol):
+    """Server-owned checks and relationship updates around durable work."""
+
+    async def authorize(self, contexts: RelationalContexts, claim: WorkClaim, /) -> None: ...
+
+    async def succeeded(self, contexts: RelationalContexts, work: StoredWork, /) -> None: ...
 
 
 class BuiltinConfigurationError(RuntimeError):
@@ -215,7 +225,10 @@ async def open_builtin_runtime(
     scope_cache_observer: ScopeCacheObserver | None = None,
     tracing: RuntimeTracing | None = None,
     work_observer: WorkObserver | None = None,
+    work_execution_hooks: WorkExecutionHooks | None = None,
     source_registry: SourceDefinitionRegistry | None = None,
+    cursor_secret: bytes | None = None,
+    schema_extension_tables: tuple[Table, ...] = (),
 ) -> AsyncIterator[BuiltinRuntime]:
     """Open the selected database, inference adapters, and built-in runtime.
 
@@ -315,6 +328,8 @@ async def open_builtin_runtime(
                 token_estimator=token_estimator,
                 memory_reranker=configured_reranker,
                 source_registry=configured_source_registry,
+                cursor_secret=cursor_secret,
+                schema_extension_tables=schema_extension_tables,
             )
         )
         _validate_work_configuration(config, configured_pipeline, configured_incubation, configured_reranker)
@@ -333,6 +348,7 @@ async def open_builtin_runtime(
             contexts,
             membership.instance_id,
             claim_readiness=generation_readiness,
+            execution_hooks=work_execution_hooks,
             observer=work_observer,
             tracing=tracing,
         )
@@ -386,6 +402,7 @@ async def open_builtin_runtime(
                 skill_publication_service=contexts.skill_publications,
                 remote_skill_distribution=contexts.remote_skill_distribution(),
                 statistics_service=contexts.statistics,
+                record_service=contexts.records,
                 recall_token_estimator=contexts.estimate_recall_tokens,
                 memory_flusher=(lambda scope_id, limit: operation_manager.flush_memory(scope_id, limit=limit))
                 if config.deployment.role == "all"
@@ -438,9 +455,18 @@ def _work_services(
     owner_id: str,
     *,
     claim_readiness: ReadinessProbe | None,
+    execution_hooks: WorkExecutionHooks | None,
     observer: WorkObserver | None,
     tracing: RuntimeTracing | None,
 ) -> tuple[DurableWorker | None, OperationManager]:
+    hooks = cast(WorkExecutionHooks, execution_hooks)
+
+    async def authorize(claim: WorkClaim) -> None:
+        await hooks.authorize(contexts, claim)
+
+    async def observe_success(work: StoredWork) -> None:
+        await hooks.succeeded(contexts, work)
+
     handlers: list[WorkHandler] = [
         MemoryWorkHandler(contexts),
         OperationMaintenanceHandler(
@@ -457,6 +483,8 @@ def _work_services(
             handlers=handlers,
             config=config.worker,
             claim_readiness=claim_readiness,
+            authorizer=None if execution_hooks is None else authorize,
+            succeeded_observer=None if execution_hooks is None else observe_success,
             observer=observer,
             tracing=tracing,
         )
@@ -606,13 +634,15 @@ async def open_builtin_contexts(
     token_estimator: TokenEstimator | None = None,
     memory_reranker: MemoryReranker | None = None,
     source_registry: SourceDefinitionRegistry | None = None,
+    cursor_secret: bytes | None = None,
+    schema_extension_tables: tuple[Table, ...] = (),
 ) -> AsyncIterator[RelationalContexts]:
     """Open the selected database and expose scope-bound PowerContext providers."""
 
     configured_token_estimator = character_token_estimator() if token_estimator is None else token_estimator
     embedding_profile = None if embedding_model is None else embedding_model.profile
     async with _open_runtime_storage(config, embedding_profile=embedding_profile) as storage:
-        await _prepare_runtime_schema(config, storage)
+        await _prepare_runtime_schema(config, storage, schema_extension_tables=schema_extension_tables)
         contexts = RelationalContexts(
             database=storage.database,
             index=storage.index,
@@ -628,6 +658,7 @@ async def open_builtin_contexts(
             memory_reranker=memory_reranker,
             memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
             source_registry=source_registry,
+            cursor_secret=cursor_secret,
         )
         await contexts.scopes.bootstrap_default()
         yield contexts
@@ -683,14 +714,23 @@ async def _open_runtime_storage(
         yield _RuntimeStorage(profile.database, index, experience_index)
 
 
-async def _prepare_runtime_schema(config: BuiltinConfig, storage: _RuntimeStorage) -> None:
+async def _prepare_runtime_schema(
+    config: BuiltinConfig,
+    storage: _RuntimeStorage,
+    *,
+    schema_extension_tables: tuple[Table, ...] = (),
+) -> None:
     if config.deployment.mode == "distributed":
         await require_current_schema(storage.database)
         async with storage.database.transaction() as connection:
             await storage.index.verify(connection)
             await cast(_SchemaVerifier, storage.experience_index).verify(connection)
         return
-    await migrate_database(storage.database, provision=_schema_provisioner(storage))
+    await migrate_database(
+        storage.database,
+        provision=_schema_provisioner(storage),
+        known_extension_tables=(table.name for table in schema_extension_tables),
+    )
 
 
 def _schema_provisioner(storage: _RuntimeStorage) -> Callable[[AsyncConnection], Awaitable[None]]:

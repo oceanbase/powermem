@@ -50,6 +50,7 @@ CURRENT_SCHEMA_REVISION = "0003_scope_source_skill"
 SCHEMA_VERSION_TABLE = "pc_schema_revisions"
 _MIGRATION_LEASE = "schema-migration"
 _MIGRATION_LEASE_SECONDS = 600
+_NO_EXTENSION_TABLES: frozenset[str] = frozenset()
 _BASE_TABLES = SHARED_TABLES + MEMORY_TABLES + STATISTICS_TABLES
 _NEW_TABLES = WORK_TABLES + COORDINATION_TABLES
 _CURRENT_TABLES = SCOPE_TABLES + _BASE_TABLES + _NEW_TABLES
@@ -89,13 +90,14 @@ async def migrate_database(
     database: AsyncDatabase,
     *,
     provision: SchemaProvisioner | None = None,
+    known_extension_tables: Iterable[str] = (),
 ) -> str:
     """Validate/stamp legacy state and upgrade through the current revision."""
 
     lease = await _acquire_migration_lease(database)
     try:
         async with database.transaction() as connection:
-            await connection.run_sync(_prepare_legacy_revision)
+            await connection.run_sync(_prepare_legacy_revision, frozenset(known_extension_tables))
             await connection.run_sync(_upgrade_to_head)
             if provision is not None:
                 await provision(connection)
@@ -150,7 +152,10 @@ async def _release_migration_lease(database: AsyncDatabase, lease: CoordinatorLe
         return
 
 
-def _prepare_legacy_revision(connection: Connection) -> None:
+def _prepare_legacy_revision(
+    connection: Connection,
+    known_extension_tables: frozenset[str] = _NO_EXTENSION_TABLES,
+) -> None:
     actual = _current_revision(connection)
     if actual is not None:
         return
@@ -158,7 +163,7 @@ def _prepare_legacy_revision(connection: Connection) -> None:
     existing = set(inspector.get_table_names())
     existing.discard(SCHEDULER_LEASES_TABLE.name)
     existing.discard(SCHEMA_VERSION_TABLE)
-    powercontext_tables = {name for name in existing if name.startswith("pc_")}
+    powercontext_tables = {name for name in existing if name.startswith("pc_") and name not in known_extension_tables}
     if not powercontext_tables:
         return
 

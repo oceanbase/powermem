@@ -144,7 +144,7 @@ Scheduler 或 Worker 的端口。生产环境还应为各角色使用独立最�
 从 secret manager 把强 token 加载到 Server 进程环境：
 
 ```bash
-export POWERCONTEXT_SERVER_AUTH_ENABLED=true
+export POWERCONTEXT_SERVER_ACCESS_MODE=enforced
 export POWERCONTEXT_SERVER_AUTH_TOKEN="$POWERCONTEXT_DEPLOYMENT_TOKEN"
 powercontext server run
 ```
@@ -156,7 +156,7 @@ docker run --rm \
   --name powercontext-server \
   --publish 127.0.0.1:8000:8000 \
   --volume powercontext-data:/data \
-  --env POWERCONTEXT_SERVER_AUTH_ENABLED=true \
+  --env POWERCONTEXT_SERVER_ACCESS_MODE=enforced \
   --env POWERCONTEXT_SERVER_AUTH_TOKEN \
   powercontext-server:local
 ```

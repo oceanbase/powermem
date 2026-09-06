@@ -17,15 +17,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractContextManager, nullcontext, suppress
 from dataclasses import dataclass
 from typing import Protocol
 
+from powercontext._logging import log_safely
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.work import (
     StaleWorkClaimError,
+    StoredWork,
     WorkClaim,
     WorkCommit,
     WorkFailure,
@@ -43,9 +46,13 @@ from powercontext.builtin.runtime.readiness import ReadinessCheckStatus
 from powercontext.builtin.runtime.work_observability import WorkObserver, refresh_work_queue
 
 ClaimReadiness = Callable[[], Awaitable[str]]
+WorkAuthorizer = Callable[[WorkClaim], Awaitable[None]]
+WorkSucceededObserver = Callable[[StoredWork], Awaitable[None]]
 _EMPTY_HANDLERS = "at least one handler is required"
 _INVALID_HANDLER_KIND = "handler kind must be a non-empty trimmed string"
 _INVALID_HANDLER_VERSIONS = "handler versions must be positive"
+
+logger = logging.getLogger(__name__)
 
 
 class WorkHandler(Protocol):
@@ -86,6 +93,8 @@ class DurableWorker:
         repository: WorkRepository | None = None,
         random_source: Callable[[float, float], float] = random.uniform,
         claim_readiness: ClaimReadiness | None = None,
+        authorizer: WorkAuthorizer | None = None,
+        succeeded_observer: WorkSucceededObserver | None = None,
         observer: WorkObserver | None = None,
         tracing: RuntimeTracing | None = None,
     ) -> None:
@@ -95,6 +104,8 @@ class DurableWorker:
         self._repository = WorkRepository(observer=observer) if repository is None else repository
         self._random_source = random_source
         self._claim_readiness = claim_readiness
+        self._authorizer = authorizer
+        self._succeeded_observer = succeeded_observer
         self._observer = observer
         self._tracing = tracing
         self._handlers = _handler_map(handlers)
@@ -236,6 +247,8 @@ class DurableWorker:
         heartbeat_stop = asyncio.Event()
         heartbeat = asyncio.create_task(self._heartbeat(claim, heartbeat_stop))
         try:
+            if self._authorizer is not None:
+                await self._authorizer(claim)
             prepared = await handler.prepare(claim)
             if heartbeat.done() and heartbeat.exception() is not None:
                 await heartbeat
@@ -247,7 +260,7 @@ class DurableWorker:
                 },
             ):
                 async with self._database.transaction() as connection:
-                    await self._repository.complete(
+                    completed = await self._repository.complete(
                         connection,
                         claim,
                         prepared.result,
@@ -265,10 +278,30 @@ class DurableWorker:
                 WorkFailure(category="internal", code="unhandled_handler_error", retryable=True),
             )
         else:
+            await self._observe_success(completed)
             return "succeeded"
         finally:
             heartbeat_stop.set()
             await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _observe_success(self, work: StoredWork) -> None:
+        if self._succeeded_observer is None:
+            return
+        try:
+            await self._succeeded_observer(work)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_safely(
+                logger,
+                logging.ERROR,
+                "Work success observer failed",
+                extra={
+                    "event": "work.success_observer_failed",
+                    "work_kind": work.kind,
+                    "error_type": type(error).__name__,
+                },
+            )
 
     async def _finish_cancel_if_owned(self, claim: WorkClaim) -> str:
         """Converge a fenced cancelling claim without waiting for lease expiry."""
