@@ -7,7 +7,6 @@
 可以改一个输入，再运行观察变化。共 22 篇：11 篇基础与 HTTP 教程、10 篇进阶实验，以及 1 篇完整团队工作流。前七篇不需要模型或 API Key。
 想先看完整过程，可以直接打开 [22 · 从接手到团队复用](22_complete_team_workflow.ipynb)。
 下文给出课程的接口选择、功能覆盖和成功标准。
-真实 OceanBase、模型、Agent 与浏览器的执行结果见 [验收报告](VALIDATION.md)。
 
 ## 先运行第一篇
 
@@ -226,6 +225,7 @@ Handoff 的准备预览、提交、接收确认和任务完成也是不同状态
 ## 完整执行与保留输出
 
 每篇会使用全新 Kernel，保留执行后的 Notebook、HTML 和 `summary.json`。源 Notebook 保持无输出。
+执行后的 Notebook、HTML、截图、日志和验收清单属于本地运行产物，请保留在 `.powercontext/` 或仓库外的目录中，不提交到 Git。
 
 ```bash
 # 不需要模型、浏览器或独立 HTTP 服务的篇目
