@@ -29,7 +29,13 @@ from powercontext.server.authentication import (
     StaticBearerAuthenticationProvider,
 )
 from powercontext.server.authz import PrincipalRef
-from powercontext.server.context import bind_authentication, is_internal_bridge, reset_authentication
+from powercontext.server.context import (
+    bind_authentication,
+    bind_principal,
+    is_internal_bridge,
+    reset_authentication,
+    reset_principal,
+)
 
 _PUBLIC_PATHS = frozenset({
     "/",
@@ -48,6 +54,12 @@ _PUBLIC_PATHS = frozenset({
 _PUBLIC_PATH_PREFIXES = ("/static/",)
 
 
+def is_public_http_path(path: str) -> bool:
+    """Return whether a request bypasses Server authentication."""
+
+    return path in _PUBLIC_PATHS or path.startswith(_PUBLIC_PATH_PREFIXES)
+
+
 class AuthenticationMiddleware:
     """Authenticate every protected external HTTP request through one Provider."""
 
@@ -56,7 +68,7 @@ class AuthenticationMiddleware:
         self._provider = provider
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if is_internal_bridge() or _is_public(scope):
+        if scope["type"] != "http" or is_internal_bridge() or is_public_http_path(scope["path"]):
             await self.app(scope, receive, send)
             return
         try:
@@ -105,8 +117,21 @@ class StaticBearerMiddleware(AuthenticationMiddleware):
         super().__init__(app, provider=StaticBearerAuthenticationProvider(token, resolved))
 
 
-def _is_public(scope: Scope) -> bool:
-    return scope["type"] != "http" or scope["path"] in _PUBLIC_PATHS or scope["path"].startswith(_PUBLIC_PATH_PREFIXES)
+class LocalPrincipalMiddleware:
+    """Bind the implicit service Principal used by local unprotected deployments."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or is_internal_bridge():
+            await self.app(scope, receive, send)
+            return
+        token = bind_principal(PrincipalRef(type="service", id="local"))
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            reset_principal(token)
 
 
 def _client_host(scope: Scope) -> str | None:
@@ -130,4 +155,9 @@ async def _error_response(
     await response(scope, receive, send)
 
 
-__all__ = ["AuthenticationMiddleware", "StaticBearerMiddleware"]
+__all__ = [
+    "AuthenticationMiddleware",
+    "LocalPrincipalMiddleware",
+    "StaticBearerMiddleware",
+    "is_public_http_path",
+]
