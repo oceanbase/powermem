@@ -97,6 +97,46 @@ await Promise.all(
   }),
 );
 
+const rootDocument = await readFile(outputPage('/'), 'utf8');
+const englishDocument = await readFile(outputPage('/en'), 'utf8');
+const chineseDocument = await readFile(outputPage('/zh'), 'utf8');
+const siteUrl = 'https://powercontext.oceanbase.io';
+const homeAlternates = [
+  `<link rel="alternate" hrefLang="en" href="${siteUrl}/"`,
+  `<link rel="alternate" hrefLang="zh" href="${siteUrl}/zh/"`,
+  `<link rel="alternate" hrefLang="x-default" href="${siteUrl}/"`,
+];
+
+if (/http-equiv="refresh"/i.test(rootDocument) || !rootDocument.includes('Keep work moving')) {
+  throw new Error('Static root page does not render the default English site.');
+}
+
+if (
+  !rootDocument.includes('<html lang="en"')
+  || !englishDocument.includes('<html lang="en"')
+  || !chineseDocument.includes('<html lang="zh"')
+) {
+  throw new Error('Static localized pages do not declare the expected document language.');
+}
+
+if (
+  !rootDocument.includes(`<link rel="canonical" href="${siteUrl}/"`)
+  || !englishDocument.includes(`<link rel="canonical" href="${siteUrl}/"`)
+  || !chineseDocument.includes(`<link rel="canonical" href="${siteUrl}/zh/"`)
+  || homeAlternates.some(
+    (alternate) =>
+      !rootDocument.includes(alternate)
+      || !englishDocument.includes(alternate)
+      || !chineseDocument.includes(alternate),
+  )
+) {
+  throw new Error('Static home pages do not declare the expected canonical and language alternate URLs.');
+}
+
+if (rootDocument.includes('href="/en/"')) {
+  throw new Error('Static root page links to the duplicate English home URL.');
+}
+
 if (missingFromManifest.length > 0 || missingFromOutput.length > 0) {
   const details = [
     missingFromManifest.length > 0
