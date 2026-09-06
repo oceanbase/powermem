@@ -33,15 +33,20 @@ from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.http._generated.operations import CAPTURE_CONTENT_SOURCE
 from powercontext.server.configuration import server_settings_context
 from powercontext.server.factory import create_server_app
-from powercontext.server.settings import McpConfig, ServerSettings
+from powercontext.server.settings import AccessControlConfig, BearerAuthConfig, McpConfig, ServerSettings
 from tests.e2e.test_artifact_tags import exercise_tag_http
 
 
-async def _generated_journey(settings: ServerSettings) -> None:
+async def _generated_journey(settings: ServerSettings, *, token: str | None = None) -> None:
     app = create_server_app(settings=settings)
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver", timeout=120) as client,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            timeout=120,
+            headers={} if token is None else {"Authorization": f"Bearer {token}"},
+        ) as client,
     ):
         created = await client.post(
             "/v1/scopes",
@@ -96,6 +101,7 @@ async def _generated_journey(settings: ServerSettings) -> None:
         print(
             json.dumps({
                 "database": settings.database.kind,
+                "access_mode": settings.access.mode,
                 "real_generation": "passed",
                 "generated_entries": len(entries),
                 "real_embedding": "passed",
@@ -106,7 +112,8 @@ async def _generated_journey(settings: ServerSettings) -> None:
 
 
 @pytest.mark.parametrize("backend", ["oceanbase", "sqlite"])
-def test_real_models_and_tags(backend: str, tmp_path: Path, pytestconfig: pytest.Config) -> None:
+@pytest.mark.parametrize("access_mode", ["disabled", "enforced"])
+def test_real_models_and_tags(backend: str, access_mode: str, tmp_path: Path, pytestconfig: pytest.Config) -> None:
     if not pytestconfig.getoption("run_real_e2e"):
         pytest.skip("pass --run-real-e2e to use .env models and disposable databases")
     env_file = pytestconfig.getoption("real_e2e_env_file")
@@ -114,15 +121,17 @@ def test_real_models_and_tags(backend: str, tmp_path: Path, pytestconfig: pytest
         assert configured.inference.generation_model and configured.inference.embedding_model
 
         async def exercise(database: OceanBaseConfig | SQLiteConfig) -> None:
+            token = "isolated-tag-acceptance" if access_mode == "enforced" else None
             settings = configured.model_copy(
                 update={
                     "database": database,
                     "mcp": McpConfig(enabled=False),
-                    "auth": configured.auth.model_copy(update={"enabled": False}),
+                    "auth": BearerAuthConfig(token=None if token is None else SecretStr(token)),
+                    "access": AccessControlConfig.model_validate({"mode": access_mode}),
                 }
             )
-            await exercise_tag_http(create_server_app(settings=settings))
-            await _generated_journey(settings)
+            await exercise_tag_http(create_server_app(settings=settings), token=token)
+            await _generated_journey(settings, token=token)
 
         async def scenario() -> None:
             if backend == "sqlite":

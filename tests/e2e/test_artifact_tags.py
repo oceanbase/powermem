@@ -18,6 +18,7 @@ import asyncio
 from pathlib import Path
 
 import httpx
+import pytest
 
 from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryEntryInput
 from powercontext.builtin.inference import EmbeddingResult
@@ -26,8 +27,10 @@ from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.tags import MemoryEntryTagTarget, TagFilter
 from powercontext.client import PowerContextClient
 from powercontext.http import QueryArtifactTagsRequest, ReplaceArtifactTagsRequest
+from powercontext.server.authentication import StaticBearerAuthenticationProvider
+from powercontext.server.authz import PrincipalRef
 from powercontext.server.factory import create_server_app
-from powercontext.server.settings import McpConfig, ServerSettings
+from powercontext.server.settings import AccessControlConfig, McpConfig, ServerSettings
 
 
 class _EmbeddingModel:
@@ -35,6 +38,46 @@ class _EmbeddingModel:
 
     async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
         return EmbeddingResult(vectors=tuple((1.0, 0.0, 0.0) for _ in texts))
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("GET", "/artifacts/experience/private/tags", None),
+        ("PUT", "/artifacts/experience/private/tags", {"tags": ["private"]}),
+        ("GET", "/artifacts/memory/private/entries/private/tags", None),
+        ("PUT", "/artifacts/memory/private/entries/private/tags", {"tags": ["private"]}),
+        ("POST", "/artifact-tags/query", {"tags": ["private"]}),
+    ],
+)
+def test_tag_routes_reject_principals_without_access(tmp_path: Path, method: str, path: str, payload) -> None:
+    async def scenario() -> None:
+        app = create_server_app(
+            settings=ServerSettings(
+                database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'access.db'}"),
+                access=AccessControlConfig(mode="enforced"),
+                mcp=McpConfig(enabled=False),
+            ),
+            authentication_provider=StaticBearerAuthenticationProvider(
+                "tag-test-token", PrincipalRef(type="user", id="outsider")
+            ),
+        )
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client,
+        ):
+            url = "/v1/scopes/private" + path
+            anonymous = await client.request(method, url, json=payload)
+            assert anonymous.status_code == 401
+            denied = await client.request(
+                method,
+                url,
+                json=payload,
+                headers={"Authorization": "Bearer tag-test-token", "If-Match": '"unknown"'},
+            )
+            assert denied.status_code == 403, denied.text
+
+    asyncio.run(scenario())
 
 
 def test_tag_search_filters_before_candidate_limits_and_survives_rebuild(tmp_path: Path) -> None:
@@ -83,12 +126,16 @@ def test_http_tags_cover_families_entries_filters_and_inactive_lifecycle(tmp_pat
     asyncio.run(exercise_tag_http(app))
 
 
-async def exercise_tag_http(app) -> str:
+async def exercise_tag_http(app, *, token: str | None = None) -> str:
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as http,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+            headers={} if token is None else {"Authorization": f"Bearer {token}"},
+        ) as http,
     ):
-        client = PowerContextClient("http://testserver", http_client=http, trust_transport_security=True)
+        client = PowerContextClient("http://testserver", token=token, http_client=http, trust_transport_security=True)
         scope_response = await http.post(
             "/v1/scopes",
             json={

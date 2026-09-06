@@ -8,6 +8,10 @@ description: 为逻辑制品和记忆条目设置标签，并通过精确标签�
 Memory、Experience、Skill 和 Handoff 都可以在各自 Scope 内设置标签。一个 Memory 制品与其中的每条逻辑记忆分别拥有独立的标签集合。
 标签跟随逻辑 ID，不会修改内容 Revision、条目版本、血缘、向量或 Context Version。
 
+开启访问控制时，标签遵循所属对象的读取与修改权限。只读分享者可以读取该对象的标签，不能修改标签或执行 Scope 级标签查询。
+跨对象查询需要 `scope.read`；Memory 制品整体标签需要 `scope.read` 才能读取、`scope.admin` 才能修改，
+单条记忆的标签则使用该条目的 `artifact.read` / `artifact.write` 权限。权限不足返回 **403**，撤销分享后立即失去相应标签访问权限。
+
 ## 在 Dashboard 中使用
 
 启动 Server，打开总览页的**自定义标签**面板：

@@ -99,6 +99,15 @@ export const OPERATIONS = {
   replace_memory_entry_tags: { method: 'PUT', path: '/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags', location: "body", scopeMode: 'none', pathParameters: ['scope_id', 'artifact_id', 'entry_id'], queryParams: [], headerParams: ['If-Match'], successStatuses: [200], emptyStatuses: [] },
   query_artifact_tags: { method: 'POST', path: '/v1/scopes/{scope_id}/artifact-tags/query', location: "body", scopeMode: 'none', pathParameters: ['scope_id'], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
   get_artifact_revision: { method: 'GET', path: '/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}', location: null, scopeMode: 'none', pathParameters: ['scope_id', 'family', 'artifact_id', 'revision'], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  get_access_principal: { method: 'GET', path: '/v1/access/me', location: null, scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  check_access: { method: 'POST', path: '/v1/access/check', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  list_access_resources: { method: 'POST', path: '/v1/access/resources/list', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  list_access_roles: { method: 'POST', path: '/v1/access/roles/list', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  list_access_bindings: { method: 'POST', path: '/v1/access/bindings/list', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  create_access_binding: { method: 'POST', path: '/v1/access/bindings/create', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [201], emptyStatuses: [] },
+  revoke_access_binding: { method: 'POST', path: '/v1/access/bindings/revoke', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  replace_access_binding: { method: 'POST', path: '/v1/access/bindings/replace', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
+  list_access_audit: { method: 'POST', path: '/v1/access/audit/list', location: "body", scopeMode: 'none', pathParameters: [], queryParams: [], headerParams: [], successStatuses: [200], emptyStatuses: [] },
 } as const
 
 export type OperationId = keyof typeof OPERATIONS
