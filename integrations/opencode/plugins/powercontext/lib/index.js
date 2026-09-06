@@ -880,7 +880,12 @@ const OPERATIONS = {
 		location: "query",
 		scopeMode: "none",
 		pathParameters: ["scope_id", "family"],
-		queryParams: ["limit", "cursor"],
+		queryParams: [
+			"tag",
+			"tag_match",
+			"limit",
+			"cursor"
+		],
 		headerParams: [],
 		successStatuses: [200],
 		emptyStatuses: []
@@ -912,6 +917,77 @@ const OPERATIONS = {
 		],
 		queryParams: [],
 		headerParams: ["If-Match"],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_artifact_tags: {
+		method: "GET",
+		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/tags",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"family",
+			"artifact_id"
+		],
+		queryParams: [],
+		headerParams: ["If-None-Match"],
+		successStatuses: [200, 304],
+		emptyStatuses: [304]
+	},
+	replace_artifact_tags: {
+		method: "PUT",
+		path: "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/tags",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"family",
+			"artifact_id"
+		],
+		queryParams: [],
+		headerParams: ["If-Match"],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	get_memory_entry_tags: {
+		method: "GET",
+		path: "/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags",
+		location: null,
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"artifact_id",
+			"entry_id"
+		],
+		queryParams: [],
+		headerParams: ["If-None-Match"],
+		successStatuses: [200, 304],
+		emptyStatuses: [304]
+	},
+	replace_memory_entry_tags: {
+		method: "PUT",
+		path: "/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: [
+			"scope_id",
+			"artifact_id",
+			"entry_id"
+		],
+		queryParams: [],
+		headerParams: ["If-Match"],
+		successStatuses: [200],
+		emptyStatuses: []
+	},
+	query_artifact_tags: {
+		method: "POST",
+		path: "/v1/scopes/{scope_id}/artifact-tags/query",
+		location: "body",
+		scopeMode: "none",
+		pathParameters: ["scope_id"],
+		queryParams: [],
+		headerParams: [],
 		successStatuses: [200],
 		emptyStatuses: []
 	},
@@ -1096,7 +1172,10 @@ async function readLimitedBody(response) {
 }
 function queryString(payload) {
 	const params = new URLSearchParams();
-	for (const [key, value] of Object.entries(payload ?? {})) if (value !== void 0 && value !== null) params.set(key, String(value));
+	for (const [key, value] of Object.entries(payload ?? {})) {
+		if (value === void 0 || value === null) continue;
+		for (const item of Array.isArray(value) ? value : [value]) params.append(key, String(item));
+	}
 	const encoded = params.toString();
 	return encoded ? `?${encoded}` : "";
 }
@@ -1176,7 +1255,8 @@ var PowerContextClient = class {
 					kind: "json",
 					value: null,
 					status: response.status,
-					requestId
+					requestId,
+					etag: response.headers.get("ETag") ?? void 0
 				};
 			}
 			try {
@@ -1184,7 +1264,8 @@ var PowerContextClient = class {
 					kind: "json",
 					value: JSON.parse(Buffer.from(bytes).toString("utf8")),
 					status: response.status,
-					requestId
+					requestId,
+					etag: response.headers.get("ETag") ?? void 0
 				};
 			} catch {
 				throw new InvalidResponseError(spec.path, requestId);

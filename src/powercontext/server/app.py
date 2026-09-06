@@ -301,6 +301,20 @@ from powercontext.builtin.sources import (
     ObservedValidation,
     SkillUsageCapture,
 )
+from powercontext.builtin.tags import (
+    ArtifactTagSet as RuntimeArtifactTagSet,
+)
+from powercontext.builtin.tags import (
+    ArtifactTagTarget,
+    MemoryEntryTagTarget,
+    TagPreconditionError,
+    TagQuery,
+    TagQueryPage,
+    TagTarget,
+)
+from powercontext.builtin.tags import (
+    TagFilter as RuntimeTagFilter,
+)
 from powercontext.builtin.work import (
     AcknowledgeHandoff as RuntimeAcknowledgeHandoff,
 )
@@ -549,9 +563,16 @@ from powercontext.http._generated.models import (
     ArtifactFamily as TransportArtifactFamily,
 )
 from powercontext.http._generated.models import (
+    ArtifactTagPage,
+    ArtifactTagSet,
+    QueryArtifactTagsRequest,
+    ReplaceArtifactTagsRequest,
+    TagMatch,
+)
+from powercontext.http._generated.models import (
     ShareUnit as TransportShareUnit,
 )
-from powercontext.http._generated.models import Type4 as TransportMemoryEntrySelectorType
+from powercontext.http._generated.models import Type6 as TransportMemoryEntrySelectorType
 from powercontext.http._generated.operations import (
     ACKNOWLEDGE_HANDOFF,
     ACTIVATE_HANDOFF,
@@ -582,6 +603,7 @@ from powercontext.http._generated.operations import (
     GET_ARTIFACT,
     GET_ARTIFACT_CANDIDATE,
     GET_ARTIFACT_REVISION,
+    GET_ARTIFACT_TAGS,
     GET_CAPABILITIES,
     GET_CONNECTOR_CHECKPOINT,
     GET_DEFAULT_SCOPE,
@@ -589,6 +611,7 @@ from powercontext.http._generated.operations import (
     GET_HANDOFF_REPORT,
     GET_LIVENESS,
     GET_MEMORY_ENTRY,
+    GET_MEMORY_ENTRY_TAGS,
     GET_READINESS,
     GET_SCOPE,
     GET_SKILL,
@@ -617,6 +640,7 @@ from powercontext.http._generated.operations import (
     PROPOSE_SKILL_PACKAGE,
     PUBLISH_ARTIFACT,
     PUBLISH_REMOTE_SKILL,
+    QUERY_ARTIFACT_TAGS,
     RECONCILE_REMOTE_SKILLS,
     RECORD_REMOTE_SKILL_RECEIPT,
     RECORD_SKILL_USAGE,
@@ -627,6 +651,8 @@ from powercontext.http._generated.operations import (
     RENAME_REMOTE_SKILL_TARGET,
     REPLACE_ACCESS_BINDING,
     REPLACE_ARTIFACT,
+    REPLACE_ARTIFACT_TAGS,
+    REPLACE_MEMORY_ENTRY_TAGS,
     RESOLVE_EXTERNAL_SKILL,
     RESOLVE_SCOPE_BINDING,
     RESOLVE_SCOPE_SELECTION,
@@ -725,6 +751,14 @@ class _SourceApplication(Protocol):
 
 
 class _ScopedRecordApplication(Protocol):
+    async def get_tags(self, target: TagTarget) -> RuntimeArtifactTagSet: ...
+
+    async def replace_tags(
+        self, target: TagTarget, tags: tuple[str, ...], *, expected_etag: str
+    ) -> RuntimeArtifactTagSet: ...
+
+    async def query_tags(self, query: TagQuery, *, caller: str = "runtime") -> TagQueryPage: ...
+
     async def create_source(
         self,
         source_type: str,
@@ -760,6 +794,7 @@ class _ScopedRecordApplication(Protocol):
         *,
         limit: int,
         cursor: str | None,
+        tag_filter: RuntimeTagFilter | None = None,
     ) -> RuntimeArtifactRecordPage: ...
 
     async def replace_artifact(
@@ -1027,7 +1062,9 @@ class _ScopedMemoryApplication(Protocol):
 
     async def search(self, request: RuntimeSearchMemoryRequest, /) -> MemorySearchPage: ...
 
-    async def list(self, *, include_inactive: bool = False) -> MemoryEntriesPage: ...
+    async def list(
+        self, *, include_inactive: bool = False, tag_filter: RuntimeTagFilter | None = None
+    ) -> MemoryEntriesPage: ...
 
     async def get(self, request: RuntimeGetMemoryEntryRequest, /) -> MemoryEntryRecord: ...
 
@@ -1224,6 +1261,11 @@ def create_app(
     _add_route(app, CREATE_SOURCE, create_source)
     _add_route(app, GET_SOURCE, get_source)
     _add_route(app, CREATE_ARTIFACT, create_artifact)
+    _add_route(app, GET_MEMORY_ENTRY_TAGS, get_memory_entry_tags)
+    _add_route(app, REPLACE_MEMORY_ENTRY_TAGS, replace_memory_entry_tags)
+    _add_route(app, GET_ARTIFACT_TAGS, get_artifact_tags)
+    _add_route(app, REPLACE_ARTIFACT_TAGS, replace_artifact_tags)
+    _add_route(app, QUERY_ARTIFACT_TAGS, query_artifact_tags)
     _add_route(app, GET_ARTIFACT_REVISION, get_artifact_revision)
     _add_route(app, GET_ARTIFACT, get_artifact)
     _add_route(app, LIST_ARTIFACTS, list_artifacts)
@@ -1965,8 +2007,12 @@ async def create_artifact(
 def _list_artifacts_query(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+    tag: Annotated[list[str] | None, Query(min_length=1, max_length=16)] = None,
+    tag_match: Annotated[TagMatch | None, Query()] = None,
 ) -> ListArtifactsRequest:
-    return ListArtifactsRequest(limit=limit, cursor=cursor)
+    if tag is None and tag_match is not None:
+        raise InvalidBaseAccessRequestError("tag_match", "requires at least one tag")
+    return ListArtifactsRequest.model_validate({"limit": limit, "cursor": cursor, "tag": tag, "tag_match": tag_match})
 
 
 async def list_artifacts(
@@ -1979,11 +2025,117 @@ async def list_artifacts(
         family.value,
         limit=request.limit,
         cursor=request.cursor,
+        **(
+            {}
+            if request.tag is None
+            else {
+                "tag_filter": RuntimeTagFilter(
+                    tags=tuple(tag.root for tag in request.tag),
+                    match="all" if request.tag_match is None else request.tag_match.value,
+                )
+            }
+        ),
     )
     return ArtifactPage(
         items=[_artifact_collection_item_response(item) for item in result.items],
         next_cursor=result.next_cursor,
     )
+
+
+async def get_artifact_tags(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256)],
+    family: Annotated[BaseArtifactFamily, Path()],
+    artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
+    response: Response,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match", min_length=1)] = None,
+) -> ArtifactTagSet | Response:
+    target = ArtifactTagTarget(family=family.value, artifact_id=artifact_id)
+    result = await application.records.for_scope(scope_id).get_tags(target)
+    return _tag_response(result, response, if_none_match=if_none_match)
+
+
+async def replace_artifact_tags(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256)],
+    family: Annotated[BaseArtifactFamily, Path()],
+    artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: ReplaceArtifactTagsRequest,
+    response: Response,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> ArtifactTagSet:
+    target = ArtifactTagTarget(family=family.value, artifact_id=artifact_id)
+    result = await application.records.for_scope(scope_id).replace_tags(
+        target,
+        tuple(tag.root for tag in request.tags),
+        expected_etag=_require_artifact_etag(if_match),
+    )
+    response.headers["ETag"] = result.etag
+    return ArtifactTagSet.model_validate(result.model_dump(mode="json"))
+
+
+async def get_memory_entry_tags(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256)],
+    artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
+    entry_id: Annotated[str, Path(min_length=1, max_length=128)],
+    response: Response,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    if_none_match: Annotated[str | None, Header(alias="If-None-Match", min_length=1)] = None,
+) -> ArtifactTagSet | Response:
+    target = MemoryEntryTagTarget(artifact_id=artifact_id, entry_id=entry_id)
+    result = await application.records.for_scope(scope_id).get_tags(target)
+    return _tag_response(result, response, if_none_match=if_none_match)
+
+
+async def replace_memory_entry_tags(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256)],
+    artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
+    entry_id: Annotated[str, Path(min_length=1, max_length=128)],
+    request: ReplaceArtifactTagsRequest,
+    response: Response,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+) -> ArtifactTagSet:
+    target = MemoryEntryTagTarget(artifact_id=artifact_id, entry_id=entry_id)
+    result = await application.records.for_scope(scope_id).replace_tags(
+        target,
+        tuple(tag.root for tag in request.tags),
+        expected_etag=_require_artifact_etag(if_match),
+    )
+    response.headers["ETag"] = result.etag
+    return ArtifactTagSet.model_validate(result.model_dump(mode="json"))
+
+
+def _tag_response(
+    result: RuntimeArtifactTagSet,
+    response: Response,
+    *,
+    if_none_match: str | None,
+) -> ArtifactTagSet | Response:
+    etag = result.etag
+    if if_none_match is not None and any(
+        value.strip().removeprefix("W/") == etag for value in if_none_match.split(",")
+    ):
+        return Response(status_code=304, headers={"ETag": etag})
+    response.headers["ETag"] = etag
+    return ArtifactTagSet.model_validate(result.model_dump(mode="json"))
+
+
+async def query_artifact_tags(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256)],
+    request: QueryArtifactTagsRequest,
+    http_request: Request,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactTagPage:
+    principal = current_principal()
+    caller = (
+        f"{principal.type}:{principal.id}"
+        if principal is not None
+        else sha256(http_request.headers.get("authorization", "anonymous").encode()).hexdigest()
+    )
+    query = TagQuery.model_validate_json(request.model_dump_json(exclude_none=True))
+    result = await application.records.for_scope(scope_id).query_tags(query, caller=caller)
+    return ArtifactTagPage.model_validate(result.model_dump(mode="json"))
 
 
 async def get_artifact(
@@ -2420,6 +2572,11 @@ async def list_memory_entries(
 ) -> ListMemoryEntriesResponse:
     result = await application.memory.for_scope(request.scope_id).list(
         include_inactive=request.include_inactive,
+        **(
+            {}
+            if request.tag_filter is None
+            else {"tag_filter": RuntimeTagFilter.model_validate_json(request.tag_filter.model_dump_json())}
+        ),
     )
     return mapping.entries_response(result)
 
@@ -3564,6 +3721,8 @@ _COLLECTION_CONTENT_OPERATIONS = frozenset({
     "list_artifacts",
     "get_artifact",
     "get_artifact_revision",
+    "get_artifact_tags",
+    "query_artifact_tags",
     "prepare_handoff",
     "activate_handoff",
     "finalize_handoff",
@@ -3915,6 +4074,49 @@ def _path_artifact_write_access(
     return _path_artifact_access(payload, action=AccessAction.ARTIFACT_WRITE)
 
 
+def _path_artifact_tags_write_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    if _path_artifact_family(payload) == BaseArtifactFamily.MEMORY.value:
+        # The Memory container has no single entry owner; its shared metadata
+        # belongs to the Scope administrator.
+        return _path_scope_access(payload, action=AccessAction.SCOPE_ADMIN)
+    return _path_artifact_access(payload, action=AccessAction.ARTIFACT_WRITE)
+
+
+def _path_memory_entry_access(
+    payload: Mapping[str, Any],
+    *,
+    action: AccessAction,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    return (
+        (
+            action,
+            ResourceRef.artifact(
+                _nested_request_value(payload, "scope_id"),
+                family="memory",
+                artifact_id=_nested_request_value(payload, "artifact_id"),
+                selector=MemoryEntrySelector(entry_id=_nested_request_value(payload, "entry_id")),
+            ),
+        ),
+    )
+
+
+def _path_memory_entry_read_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    return _path_memory_entry_access(payload, action=AccessAction.ARTIFACT_READ)
+
+
+def _path_memory_entry_write_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    return _path_memory_entry_access(payload, action=AccessAction.ARTIFACT_WRITE)
+
+
 def _base_memory_write_access(
     payload: Mapping[str, Any],
 ) -> tuple[tuple[AccessAction, ResourceRef], ...]:
@@ -4023,6 +4225,9 @@ _NAMED_ACCESS_RESOLVERS: dict[
     "path_scope_read_access": _path_scope_read_access,
     "path_artifact_read_access": _path_artifact_read_access,
     "path_artifact_write_access": _path_artifact_write_access,
+    "path_artifact_tags_write_access": _path_artifact_tags_write_access,
+    "path_memory_entry_read_access": _path_memory_entry_read_access,
+    "path_memory_entry_write_access": _path_memory_entry_write_access,
     "publish_artifact_access": _publish_artifact_access,
     "publish_remote_skill_access": _publish_remote_skill_access,
     "scope_selection_read_access": _scope_selection_read_access,
@@ -4259,6 +4464,13 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
 
 
 def _map_service_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:  # noqa: C901
+    if isinstance(error, TagPreconditionError):
+        return (
+            status.HTTP_412_PRECONDITION_FAILED,
+            "tag_precondition_failed",
+            "Tag ETag does not match the current target state.",
+            None,
+        )
     if isinstance(error, _RuntimeNotReadyError):
         return status.HTTP_503_SERVICE_UNAVAILABLE, "runtime_not_ready", "The Runtime is not ready.", None
     base_access_error = _map_base_access_error(error)
