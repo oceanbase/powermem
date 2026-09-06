@@ -36,6 +36,8 @@ header:
     - '**/*.md'
     - '**/*.mdx'
     - '**/*.json'
+    # Notebook JSON stores the license in the first Markdown cell with escaped newlines.
+    - 'examples/jupyter/*.ipynb'
     - '**/*.svg'
     - '.github/**'
     - '**/.gitignore'

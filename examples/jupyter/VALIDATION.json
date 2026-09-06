@@ -1,0 +1,392 @@
+{
+  "verified_at_utc": "2026-09-06T09:59:42.568870+00:00",
+  "git_base": "8550f9f939f2903cc22d265bf629be06d04e8dfa",
+  "working_tree_changes": true,
+  "backend": "oceanbase",
+  "backend_version": "5.7.25-OceanBase_CE-v4.3.5.4",
+  "python": "3.14.6",
+  "packages": {
+    "powercontext": "0.1.dev561+g8550f9f93.d20260906",
+    "nbclient": "0.11.0",
+    "ipykernel": "7.3.0",
+    "langchain": "1.3.17",
+    "langgraph": "1.2.11",
+    "playwright": "1.62.0",
+    "powercontext-connector-opendal": "0.0.1"
+  },
+  "unique_notebooks": 23,
+  "execution_cases": 24,
+  "executed_cells": 196,
+  "created_databases": 26,
+  "deleted_databases": 26,
+  "total_executions_including_browser_rechecks": 26,
+  "retained_failed_attempts": 1,
+  "total_executed_cells": 204,
+  "cleanup_rechecked": {
+    "checked_at_utc": "2026-09-06T09:59:07.393806+00:00",
+    "checked_databases": 26,
+    "remaining_databases": 0,
+    "all_recorded_temporary_databases_checked": 28,
+    "all_recorded_temporary_databases_remaining": 0
+  },
+  "support_sha256": {
+    "_tutorial.py": "4f1e8f1ed2f186e818151a916d1c14a63923bf3bf31c1beb75f6a0b4270b91c5",
+    "support/amount_agent.py": "ccf73ce7d4f9eae2680c5c3936f984b385c04c950db010fd1d59a1d5c40c7ccd",
+    "support/mcp_worker.py": "254cb58a65594e6db0ab3ac4abcea6b610736257633372edb7a4cca890473a92",
+    "support/receiver_worker.py": "eda8927f25d06d0b125faeaa2ff4a770de595b3af01a728a068215910f6c7d16",
+    "support/test_amount_fixture.txt": "e39458b72c4544f0e5e6087aed00cc4a732346495ecd50c70980afca899a7580"
+  },
+  "additional_source_sha256": {
+    "examples/jupyter/run.py": "7cd7356a278204dab5e347257de8dc734bbb7b00ee4081e36d772a318c447153",
+    "examples/jupyter/verify_oceanbase.py": "b3a7eaaefbf817f98f6f375803c1b2e72b899320cd6376f6de70d430352d7b46",
+    "integrations/opendal/src/powercontext_connector_opendal/connector.py": "00395fad488ef012b72420717721df1eb76a7b5c49e6bf84f3670637c4e24537",
+    "integrations/opendal/tests/test_opendal_connector.py": "4759ac5cdc7ddfb0ca5e0f0e7e84bdd763911b39799a4578ef0e2ccd52453b8c"
+  },
+  "cases": [
+    {
+      "notebook": "01_memory_across_sessions.ipynb",
+      "requires": [],
+      "source_sha256": "dff10ce98942cc6c804e9345e75f12e168eb8a0d43aed0e5bbe32e2e64e24f21",
+      "code_sha256": "0e4663e21d74f24606933fb14865b9be49402c2c9aa7203c36141686828d923e",
+      "code_cells": 8,
+      "executed_cells": 8,
+      "status": "passed",
+      "seconds": 20.29,
+      "variant": "default"
+    },
+    {
+      "notebook": "02_memory_lifecycle.ipynb",
+      "requires": [],
+      "source_sha256": "2ff58d7860a3df60c36764b40dfeab922fd50ec53dabd09e0392f8d3794956bc",
+      "code_sha256": "c1b6b9d99f27bf509467733556c063f601bcab77dab391bb08f34f2732c7defc",
+      "code_cells": 9,
+      "executed_cells": 9,
+      "status": "passed",
+      "seconds": 22.85,
+      "variant": "default"
+    },
+    {
+      "notebook": "03_scopes.ipynb",
+      "requires": [],
+      "source_sha256": "19e6e1db2159c0bf4c8f910331592b48103f4e9e9235c2a494447a2c7c2b0074",
+      "code_sha256": "ca7a23bc2f5309daef658b1fa833a9e8730bdf998432b1ac6188002dd9b447b4",
+      "code_cells": 8,
+      "executed_cells": 8,
+      "status": "passed",
+      "seconds": 22.16,
+      "variant": "default"
+    },
+    {
+      "notebook": "04_prepared_context.ipynb",
+      "requires": [],
+      "source_sha256": "44dfe550f824945f7567fab9f2ac45a8a0629ec8f219aa8a1a9372f1730b4a1b",
+      "code_sha256": "a25a955f04f72eba1e6f6411bc95c7f02d76ed79ef6f262153ae3069e26c3e31",
+      "code_cells": 9,
+      "executed_cells": 9,
+      "status": "passed",
+      "seconds": 35.92,
+      "variant": "default"
+    },
+    {
+      "notebook": "05_work_handoff.ipynb",
+      "requires": [],
+      "source_sha256": "bfc260e8754a6a9c6c51aa0e1236d0bb6f63b8a0914c7a5e5cb83b5c24a20c19",
+      "code_sha256": "c0fd00dff99e2f6e39204350343f589aa6f5360c8cae8ef18475ea3ce6d087e5",
+      "code_cells": 11,
+      "executed_cells": 11,
+      "status": "passed",
+      "seconds": 25.22,
+      "variant": "default"
+    },
+    {
+      "notebook": "06_reviewed_experience.ipynb",
+      "requires": [],
+      "source_sha256": "3386ae8b01825787d4535d1dcfff80a920e3ebd285a8fc61227652cf274de0d3",
+      "code_sha256": "69b77dde2ed14c1a7d12d8ba1ff109a909b47731aa36c8d7e989c0cc740a2e49",
+      "code_cells": 9,
+      "executed_cells": 9,
+      "status": "passed",
+      "seconds": 22.01,
+      "variant": "default"
+    },
+    {
+      "notebook": "07_managed_skill.ipynb",
+      "requires": [],
+      "source_sha256": "4e704d27bfeb722a097d78e8b0bbb87482232f2d25766f26a7046bd831c6d010",
+      "code_sha256": "30f8ea0a224e8ac7a7925bcf8455c29e62244cb6f107e9c211736456c5abad6a",
+      "code_cells": 8,
+      "executed_cells": 8,
+      "status": "passed",
+      "seconds": 33.53,
+      "variant": "default"
+    },
+    {
+      "notebook": "08_automatic_extraction.ipynb",
+      "requires": [
+        "generation"
+      ],
+      "source_sha256": "f3498858e4c398af4cb1f9f9a9fc357bc4772668107a062463a0e42a1185f33e",
+      "code_sha256": "3ac5b7367b688666700ef717253203cb7b6998cae12f233f354c60b87a4790b9",
+      "code_cells": 12,
+      "executed_cells": 12,
+      "status": "passed",
+      "seconds": 106.17,
+      "variant": "default"
+    },
+    {
+      "notebook": "09_search_comparison.ipynb",
+      "requires": [
+        "embedding",
+        "generation"
+      ],
+      "source_sha256": "08b01ecb4d6dbf0b49ac86a9237429756d211185cd87915b8d90c44ae3c9e515",
+      "code_sha256": "9fc34a3aa96b6e36eca29bf3503dc8ceed8ae9a3a3aad40f1df6d2cbb076422f",
+      "code_cells": 9,
+      "executed_cells": 9,
+      "status": "passed",
+      "seconds": 57.24,
+      "variant": "default"
+    },
+    {
+      "notebook": "10_agent_memory.ipynb",
+      "requires": [
+        "chat"
+      ],
+      "source_sha256": "a4367dd1128b97944f6b2f7c8d6c19346cf4a0b3eec88161f5fa99b8f3c9b776",
+      "code_sha256": "955ee47fbc935550228d74c0b820c4136fc409146f79b34dae5ef65514ad9b7c",
+      "code_cells": 11,
+      "executed_cells": 11,
+      "status": "passed",
+      "seconds": 69.67,
+      "variant": "default"
+    },
+    {
+      "notebook": "11_http_api_lifecycle.ipynb",
+      "requires": [
+        "http_server"
+      ],
+      "source_sha256": "56c786c1174f9178eed1750c98337b3a7902a08d2f2e921a526028c3e9299068",
+      "code_sha256": "505077babbed9cf1782c4fbca92b74f66cbf93926d9daab0422cb66fdb958a03",
+      "code_cells": 11,
+      "executed_cells": 11,
+      "status": "passed",
+      "seconds": 3.19,
+      "variant": "default"
+    },
+    {
+      "notebook": "12_team_knowledge_sharing.ipynb",
+      "requires": [],
+      "source_sha256": "aa18067161090eb082137cde5f7f195887b15de011b7317088158decdafd92d0",
+      "code_sha256": "21b63434f1ad141b563e051e735a206288cbf08d3a0850d4847f45042afbd4fc",
+      "code_cells": 6,
+      "executed_cells": 6,
+      "status": "passed",
+      "seconds": 24.11,
+      "variant": "default"
+    },
+    {
+      "notebook": "13_team_access_control.ipynb",
+      "requires": [],
+      "source_sha256": "cb580dc915d78c596e8584d87c90e4c79e7ef2dd17f891cfc71efa955e71cfd3",
+      "code_sha256": "77e8d778cd9b0e2013da6c66be5d8212db8dbbf11a87b7d4eb9d62c7b6e75e47",
+      "code_cells": 6,
+      "executed_cells": 6,
+      "status": "passed",
+      "seconds": 25.22,
+      "variant": "default"
+    },
+    {
+      "notebook": "14_continuous_source_ingestion.ipynb",
+      "requires": [],
+      "source_sha256": "3cfc21e04de7a3031c99eb315dc5fe982d0bc45d9075f89983cc81ec265c3988",
+      "code_sha256": "f8fc83b8362f6b3d36e9a8f62d34b13c0c5ddc0ca6702d5c6664060094811a3b",
+      "code_cells": 6,
+      "executed_cells": 6,
+      "status": "passed",
+      "seconds": 25.37,
+      "variant": "default"
+    },
+    {
+      "notebook": "15_background_learning.ipynb",
+      "requires": [
+        "generation"
+      ],
+      "source_sha256": "dd99dc81ffe99193f3bf3b85c2ae09e608ee19663a3ec3cd4ec8c493565e5f76",
+      "code_sha256": "94420958a9424107eccb45727f3181ecb650b24bf7abb21b28480c8e1ff49de9",
+      "code_cells": 5,
+      "executed_cells": 5,
+      "status": "passed",
+      "seconds": 99.49,
+      "variant": "default"
+    },
+    {
+      "notebook": "16_skill_feedback_loop.ipynb",
+      "requires": [
+        "generation",
+        "chat"
+      ],
+      "source_sha256": "33a058316c0c62febe7c57bce655c866f4720b9c7e1f44018a0fd5f049af50f5",
+      "code_sha256": "4033a5aeb9761faab2200a10015b544feadf2e25adcecd4c680f11699c354a30",
+      "code_cells": 7,
+      "executed_cells": 7,
+      "status": "passed",
+      "seconds": 249.0,
+      "variant": "default"
+    },
+    {
+      "notebook": "17_external_skill_packages.ipynb",
+      "requires": [
+        "generation"
+      ],
+      "source_sha256": "3cf8fedc4c53894527bba910152724de8e0ae1982a937903888a41251ee74c6d",
+      "code_sha256": "5456d7005009171fd25c8c6d997f3820b2033836b6fd636d786f8efc8dbd7258",
+      "code_cells": 7,
+      "executed_cells": 7,
+      "status": "passed",
+      "seconds": 61.16,
+      "variant": "default"
+    },
+    {
+      "notebook": "18_skill_distribution.ipynb",
+      "requires": [],
+      "source_sha256": "28fe84b81682b69fef7ed0fb0826a05ea835f2c5a150803a9a949570a500c3f1",
+      "code_sha256": "0906a5edd434e028ba4439fa9bdc16efeff221d620970abcc4a043bfcd163f70",
+      "code_cells": 8,
+      "executed_cells": 8,
+      "status": "passed",
+      "seconds": 33.62,
+      "variant": "default"
+    },
+    {
+      "notebook": "19_mcp_agent_tools.ipynb",
+      "requires": [
+        "chat"
+      ],
+      "source_sha256": "15d8c184cf9e2492f7f137fb4bcd688255aba2356472e65eb358bebecaed0a40",
+      "code_sha256": "0b7c7371c9d757cf1ffdecd769ebe40c2958eee8880764bc7f61d17de60a902c",
+      "code_cells": 5,
+      "executed_cells": 5,
+      "status": "passed",
+      "seconds": 51.94,
+      "variant": "default"
+    },
+    {
+      "notebook": "20_team_dashboard_reports.ipynb",
+      "requires": [
+        "browser"
+      ],
+      "source_sha256": "1cea1da21e889c7aaa5f1d42e560f83f8b2c87b6b76f8d0c503bea339ef85756",
+      "code_sha256": "53cfeedb2ee30a812464bb260dafa54b76c886301fc181d1c1f2920053f02213",
+      "code_cells": 5,
+      "executed_cells": 5,
+      "status": "passed",
+      "seconds": 31.13,
+      "variant": "default"
+    },
+    {
+      "notebook": "21_observability_recovery.ipynb",
+      "requires": [
+        "generation",
+        "chat"
+      ],
+      "source_sha256": "6c5250926c9f87aa5e50fc167bd6d5c8b67bd0053e3524a29f45f77ade95990e",
+      "code_sha256": "746b50958b806134b803052120ba4a0de1a336db114f0952951bfffb0c65d406",
+      "code_cells": 6,
+      "executed_cells": 6,
+      "status": "passed",
+      "seconds": 84.38,
+      "variant": "default"
+    },
+    {
+      "notebook": "22_complete_team_workflow.ipynb",
+      "requires": [
+        "generation",
+        "chat"
+      ],
+      "source_sha256": "de0925ee1bb142a4507aa23437719c3e192fbaf8944622cbf29dbb60306f5d3c",
+      "code_sha256": "4b59fa6dde3bc89aeff0808edc96c8427ca2903013337c8eae5ae95c806b0840",
+      "code_cells": 12,
+      "executed_cells": 12,
+      "status": "passed",
+      "seconds": 256.37,
+      "variant": "default"
+    },
+    {
+      "notebook": "A1_custom_components.ipynb",
+      "requires": [],
+      "source_sha256": "1997721a810ff5cf740bced596fa0a2fd17ba4c1dc7b5434baf8cd9576cc7b01",
+      "code_sha256": "d66266225c9048bd4bac8ed6bbe178ac477848065dda35841bcb64f47ba37c72",
+      "code_cells": 7,
+      "executed_cells": 7,
+      "status": "passed",
+      "seconds": 26.97,
+      "variant": "default"
+    },
+    {
+      "notebook": "11_http_api_lifecycle.ipynb",
+      "requires": [
+        "http_server"
+      ],
+      "source_sha256": "56c786c1174f9178eed1750c98337b3a7902a08d2f2e921a526028c3e9299068",
+      "code_sha256": "505077babbed9cf1782c4fbca92b74f66cbf93926d9daab0422cb66fdb958a03",
+      "code_cells": 11,
+      "executed_cells": 11,
+      "status": "passed",
+      "seconds": 5.5,
+      "variant": "bearer"
+    }
+  ],
+  "publication": {
+    "checked_at_utc": "2026-09-06T11:01:16.637014+00:00",
+    "changes": "Apache license declarations and JSON formatting only; executable notebook cells and Python ASTs match the executed sources.",
+    "notebook_sha256": {
+      "01_memory_across_sessions.ipynb": "6df06e1dce61806e43e21a6ea654e087d33d26c42ba996e8d43f94a3c9b1f9d8",
+      "02_memory_lifecycle.ipynb": "b546412606f803c6ecc66e2b0c2dac34f181112160f24b7223a4d4c4206c1a95",
+      "03_scopes.ipynb": "fea40885abf3ea6470afb87995d33d31245b4baf2d38c37fdef0b6208a32352e",
+      "04_prepared_context.ipynb": "47b5fbdaf764a9d3b9b7ad68c9598f4d52245d0fe10771b240f2450b9ceb3da0",
+      "05_work_handoff.ipynb": "47319bc061185528a2be95e5d1339c7df0d48d223fa4a56b4795e038bd1e0afe",
+      "06_reviewed_experience.ipynb": "4e8db4516cbeee4d2735086712ba2ac1a9c85be119792f24cc9bd644a45c8afc",
+      "07_managed_skill.ipynb": "f23f90c16affb92a08064adda33ab4e9e504a31fd9561588d42a12d3060fc72e",
+      "08_automatic_extraction.ipynb": "84632e8673d3f4402884dc1af5bc759f2a2ce5a39535e423b2ada6d76715b2ae",
+      "09_search_comparison.ipynb": "cedbb1f77ca64f92a324e932872d9c4c6d2d03011cd28f747c5d1e167a21a1ff",
+      "10_agent_memory.ipynb": "4705eb97724a769ab752de1a6a3eef34202dd1485fbf387e190096055b1aeea8",
+      "11_http_api_lifecycle.ipynb": "17242fbeea0d678eb064389e2e9f325b59b1ba25821547a34167e3128ab52eff",
+      "12_team_knowledge_sharing.ipynb": "2c9b932093324b064e66d569440e4455efb234e6d0a1d937340062a3213dff97",
+      "13_team_access_control.ipynb": "75c6a448b8e0a90ad36b9945f0af4e668c59b2ce215cdda428740d080d9f48ad",
+      "14_continuous_source_ingestion.ipynb": "856c46f19a000d62ac4cefb5a871ecedc2c11993d76544c33ee1d5cc40838901",
+      "15_background_learning.ipynb": "75870d85a8ae4bf8417c315680a8e127cbb54dddd8188b358af3b9985aa9a862",
+      "16_skill_feedback_loop.ipynb": "00137f66dfc72d17865c11a81a596d41da09858a14e02dbaf6b31ba76dc93dfe",
+      "17_external_skill_packages.ipynb": "19f9fac3b0a74d3d895d97fda7a4112f84ef0098c8f3f14528276caa7bdafce9",
+      "18_skill_distribution.ipynb": "b1eb4eebd1e225b856b25192b56158cbc6e11d7c0c2b1ef4e60fa2044017fe46",
+      "19_mcp_agent_tools.ipynb": "0c143762a24811010e1fffc55ed7d4a55b0a5c85719e93d0bed405dc4b50f085",
+      "20_team_dashboard_reports.ipynb": "999867865bdbf28b3b28bcdecac76e51fa8d7943dadb3da4a5f757aaaacf940c",
+      "21_observability_recovery.ipynb": "e3723e8e772e10f64958ff6f3c7d2aa8e559094fdb38464e0cace552af69e674",
+      "22_complete_team_workflow.ipynb": "0ee7dcf21f4d05c8d53131ee49c1fa41c6562bccbf9ad5c53500782369196d1f",
+      "A1_custom_components.ipynb": "fe69cec7aaeefcdf686305062b708ea99de5e2240171b4fe2e5d933b526d4821"
+    },
+    "python_ast_sha256": {
+      "examples/jupyter/verify_oceanbase.py": "80c47881fe208d3bf36226e33de2ae72a191e6ed44108ab29ae761c506d5b7c6",
+      "examples/jupyter/_tutorial.py": "350670c7f26dc524cee252f660ececfbc90bd878805eb5ef13e7c29fd54fa587",
+      "examples/jupyter/run.py": "b7094acf4ef7601d525ba8139259ba7c0334527000e5c8a5b825fc2133d45f6f",
+      "examples/jupyter/support/amount_agent.py": "715f64d730bc10a8dc152118f631d910613ef4125ecc53f14e7c91f745723cc3",
+      "examples/jupyter/support/mcp_worker.py": "36dacecd24d55432f94071ab8247bdf11d3659e377b965de09ddbe75184cc593",
+      "examples/jupyter/support/receiver_worker.py": "664a306e2ef2b2bc8ec4822ca21bc24e8cdf504a074fafd0597e46cfa714646a",
+      "examples/jupyter/support/test_amount_fixture.txt": "23c45df07bbcc5f7a9a283ad92a48d66dfdc1228c7dcb5855635348702dfdce4"
+    },
+    "support_sha256": {
+      "_tutorial.py": "4526ec10fc978971f7f227e97a25dd828879312487ec52681261da3b5498f368",
+      "support/amount_agent.py": "6f93478fbb8c9d141624a37ca6fdfd4903e0fe25ccd1587326a8cdff9e3c8af3",
+      "support/mcp_worker.py": "8d473a029fd94520aad335044d28ff6f4e2edc5555115c9aeac27bc84543e484",
+      "support/receiver_worker.py": "6061db4edfa06fb1bee965a8b66c98e0378830ac2deab5c1c563d56f7676252a",
+      "support/test_amount_fixture.txt": "0435fc5c35a7a031cd66d55c7ca0d537b8cea4c519b04e02aaebfa4fdbb71037"
+    },
+    "additional_source_sha256": {
+      "examples/jupyter/run.py": "358b27e3b114843128d517dacf48fa8ff268f7bb568cf02a139a3870c67057c3",
+      "examples/jupyter/verify_oceanbase.py": "e4eeb1174e1014e02af8e18323a27a725f77129a83fb533c95e4c9c48d6108ee",
+      "integrations/opendal/src/powercontext_connector_opendal/connector.py": "00395fad488ef012b72420717721df1eb76a7b5c49e6bf84f3670637c4e24537",
+      "integrations/opendal/tests/test_opendal_connector.py": "4759ac5cdc7ddfb0ca5e0f0e7e84bdd763911b39799a4578ef0e2ccd52453b8c"
+    },
+    "notebook_code_unchanged": true,
+    "python_ast_unchanged": true
+  }
+}
