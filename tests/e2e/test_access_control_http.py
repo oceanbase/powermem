@@ -28,7 +28,7 @@ from powercontext.builtin.artifacts.memory import MemoryCandidateRequest, Memory
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.builtin.sources import ContentSource
-from powercontext.client import ForbiddenResponseError, PowerContextClient
+from powercontext.client import ForbiddenResponseError, PowerContextClient, UnavailableResponseError
 from powercontext.http import (
     AccessAction,
     AccessResourceType,
@@ -454,11 +454,18 @@ def test_scheduled_memory_processing_uses_the_static_service_principal_as_owner(
                     content="The scheduled service owns this extracted Memory entry.",
                 )
             )
+            entries = None
             for _ in range(100):
-                entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
+                try:
+                    entries = await client.list_memory_entries(ListMemoryEntriesRequest(scope_id=scope.scope_id))
+                except UnavailableResponseError as error:
+                    assert error.code == "artifact_owner_pending"
+                    await asyncio.sleep(0.02)
+                    continue
                 if entries.entries:
                     break
                 await asyncio.sleep(0.02)
+            assert entries is not None
             assert len(entries.entries) == 1
 
             visible = await client.list_access_resources(

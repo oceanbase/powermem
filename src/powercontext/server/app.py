@@ -146,6 +146,7 @@ from powercontext.builtin.records import (
     CursorExpiredError,
     InvalidBaseAccessRequestError,
     InvalidCursorError,
+    LogicalArtifactRecord,
 )
 from powercontext.builtin.records import (
     ArtifactCollectionItem as RuntimeArtifactCollectionItem,
@@ -165,6 +166,7 @@ from powercontext.builtin.records import (
 from powercontext.builtin.records import (
     SourceRecord as RuntimeSourceRecord,
 )
+from powercontext.builtin.review import ArtifactCandidate as RuntimeArtifactCandidate
 from powercontext.builtin.review import (
     ArtifactTargetConflictError,
     CandidateConflictError,
@@ -354,6 +356,7 @@ from powercontext.http import (
     ArtifactPage,
     ArtifactRevision,
     BaseArtifactFamily,
+    CandidatePermissions,
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
@@ -531,6 +534,9 @@ from powercontext.http import (
     HandoffDraft as TransportHandoffDraft,
 )
 from powercontext.http import (
+    HandoffReceiptIdentity as TransportHandoffReceiptIdentity,
+)
+from powercontext.http import (
     HandoffResolution as TransportHandoffResolution,
 )
 from powercontext.http import (
@@ -672,7 +678,13 @@ from powercontext.server.authz import (
     ResourceRef,
     access_control_for_mode,
 )
-from powercontext.server.authz.models import ROLE_ACTIONS, ROLE_CARDINALITIES, ROLE_RESOURCE_TYPES, ROLE_SUBJECT_TYPES
+from powercontext.server.authz.models import (
+    ROLE_ACTIONS,
+    ROLE_CARDINALITIES,
+    ROLE_RESOURCE_TYPES,
+    ROLE_SUBJECT_TYPES,
+    HandoffReceiptIdentity,
+)
 from powercontext.server.authz.profiles import ARTIFACT_FAMILY_PROFILES, artifact_family_profile
 from powercontext.server.context import (
     bind_request_id,
@@ -738,6 +750,8 @@ class _ScopedRecordApplication(Protocol):
         revision: int,
         /,
     ) -> RuntimeArtifactRecord: ...
+
+    async def logical_artifacts(self) -> tuple[LogicalArtifactRecord, ...]: ...
 
     async def query_artifacts(
         self,
@@ -1328,7 +1342,11 @@ async def get_readiness(request: Request) -> JSONResponse:
 async def _access_readiness_checks(request: Request) -> dict[str, str]:
     mode: str = request.app.state.access_mode
     access: AccessControlService | None = request.app.state.access_control
-    provider = "ready" if access is not None else ("not_ready" if mode == "enforced" else "disabled")
+    provider = (
+        ("ready" if await access.readiness() else "not_ready")
+        if access is not None
+        else ("not_ready" if mode == "enforced" else "disabled")
+    )
     authentication: AuthenticationProvider | None = request.app.state.authentication_provider
     if mode == "disabled":
         authentication_status = "disabled"
@@ -1830,8 +1848,10 @@ async def get_stats(
     request: GetStatsRequest,
     response: Response,
     application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
 ) -> ScopedStats:
     response.headers["Cache-Control"] = "no-store"
+    await _require_selection_content_ready(http_request, request.selection)
     result = await application.statistics.overview(
         _domain_scope_selection(request.selection), period=RuntimeStatisticsPeriod(request.period.value)
     )
@@ -1842,7 +1862,9 @@ async def get_handoff_report(
     request: GetHandoffReportRequest,
     response: Response,
     report: Annotated[HandoffReportApplication, Depends(_require_handoff_report_application)],
+    http_request: Request,
 ) -> HandoffReportResponse | Response:
+    await _require_selection_content_ready(http_request, request.selection)
     result = await report.get_report(_domain_scope_selection(request.selection))
     selection_digest = cast(str, result.selection_digest)
     report_digest = cast(str, result.report_digest)
@@ -1906,10 +1928,17 @@ async def get_source(
     scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
     source_type: Annotated[Literal["content"], Path()],
     source_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r"^[\x21-\x7E]+$")],
+    http_request: Request,
     application: Annotated[ServerApplication, Depends(_require_application)],
 ) -> SourceRecord:
     result = await application.records.for_scope(scope_id).get_source(source_type, source_id)
-    return _source_record_response(result)
+    response = _source_record_response(result)
+    if http_request.app.state.access_mode == "enforced" and _is_handoff_receipt_content(result.content):
+        identity = await _require_access_control(http_request).receipt_identity(scope_id, source_id)
+        if identity is None:
+            raise AccessUnavailableError("receipt_identity_pending")
+        response.receipt_identity = _receipt_identity_response(identity)
+    return response
 
 
 async def create_artifact(
@@ -2269,10 +2298,39 @@ async def acknowledge_handoff(
         and request.receiver != principal.id
     ):
         raise AccessInvalidRequestError("receiver-principal")
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+    identity = None
+    if access is not None:
+        # Reserve attribution before capturing the Source so a failed write or a
+        # concurrent replay cannot attach another Principal to this receipt ID.
+        identity = await access.record_receipt_identity(
+            HandoffReceiptIdentity(
+                request.scope_id, request.source_id, _require_principal(), request.receiver == _require_principal().id
+            )
+        )
     result = await application.work.for_scope(request.scope_id).acknowledge(
         mapping.acknowledge_handoff_request(request)
     )
-    return mapping.handoff_acknowledgement_response(result)
+    response = mapping.handoff_acknowledgement_response(result)
+    if identity is not None:
+        response.receipt_identity = _receipt_identity_response(identity)
+    return response
+
+
+def _receipt_identity_response(identity: HandoffReceiptIdentity) -> TransportHandoffReceiptIdentity:
+    return TransportHandoffReceiptIdentity(
+        principal=_access_principal_response(identity.principal),
+        receiver_identity_matches=identity.receiver_identity_matches,
+    )
+
+
+def _is_handoff_receipt_content(content: JsonValue) -> bool:
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except ValueError:
+            return False
+    return isinstance(content, dict) and content.get("schema") == "powercontext.handoff-receipt.v1"
 
 
 async def record_task_outcome(
@@ -2413,7 +2471,7 @@ async def propose_experience(
         family=result.family,
         target=result.target,
     )
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def generate_experience(
@@ -2432,7 +2490,10 @@ async def generate_experience(
             family=result.candidate.family,
             target=result.candidate.target,
         )
-    return mapping.generated_candidate_response(result)
+    response = mapping.generated_candidate_response(result)
+    if result.candidate is not None:
+        response.candidate = await _candidate_response(http_request, request.scope_id, result.candidate)
+    return response
 
 
 async def get_experience(
@@ -2456,7 +2517,7 @@ async def propose_skill(
         family=result.family,
         target=result.target,
     )
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def generate_skill(
@@ -2473,7 +2534,10 @@ async def generate_skill(
             family=result.candidate.family,
             target=result.candidate.target,
         )
-    return mapping.generated_candidate_response(result)
+    response = mapping.generated_candidate_response(result)
+    if result.candidate is not None:
+        response.candidate = await _candidate_response(http_request, request.scope_id, result.candidate)
+    return response
 
 
 async def get_skill(
@@ -2577,7 +2641,7 @@ async def propose_skill_package(
         family=candidate.family,
         target=candidate.target,
     )
-    return mapping.candidate_response(candidate)
+    return await _candidate_response(http_request, request.scope_id, candidate)
 
 
 async def record_skill_usage(
@@ -2890,12 +2954,8 @@ async def _validate_shareable_resource(application: ServerApplication | None, re
         selector = resource.selector
         if selector is None:
             raise AccessInvalidRequestError("memory-entry-selector")
-        page = await application.memory.for_scope(resource.scope_id).list(include_inactive=True)
-        if (
-            page.memory_ref is None
-            or page.memory_ref.artifact_id != identity.artifact_id
-            or all(entry.entry.entry_id != selector.entry_id for entry in page.entries)
-        ):
+        memory = await application.records.for_scope(resource.scope_id).get_artifact("memory", identity.artifact_id)
+        if selector.entry_id not in _memory_manifest_entry_ids(memory):
             raise MemoryEntryNotFoundError(selector.entry_id)
         return
     if profile.family == "experience":
@@ -3072,15 +3132,53 @@ async def import_external_skill(
             family=result.candidate.family,
             target=result.candidate.target,
         )
-    return mapping.generated_candidate_response(result)
+    response = mapping.generated_candidate_response(result)
+    if result.candidate is not None:
+        response.candidate = await _candidate_response(http_request, request.scope_id, result.candidate)
+    return response
+
+
+async def _candidate_response(
+    request: Request, scope_id: str, candidate: RuntimeArtifactCandidate[Any]
+) -> ArtifactCandidate:
+    response = mapping.candidate_response(candidate)
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    if access is None:
+        return response
+    decision = await access.check(
+        _require_principal(),
+        AccessAction.SCOPE_REVIEW,
+        ResourceRef.scope(scope_id),
+        context=_access_audit_context("candidate_permissions"),
+    )
+    pending = candidate.status.value == "pending"
+    attestation = (
+        await access.candidate_owner(scope_id, candidate.candidate_id)
+        if decision.allowed and access.provider_capabilities.relationship_management
+        else None
+    )
+    response.permissions = CandidatePermissions(
+        can_revise=pending
+        and decision.allowed
+        and attestation is not None
+        and attestation.proposed_owner == _require_principal(),
+        can_approve=pending and decision.allowed and attestation is not None,
+        can_reject=pending and decision.allowed,
+    )
+    return response
 
 
 async def list_artifact_candidates(
     request: ListArtifactCandidatesRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
 ) -> ArtifactCandidatePage:
     result = await application.review.for_scope(request.scope_id).list(mapping.list_candidates_request(request))
-    return mapping.candidate_page_response(result)
+    response = mapping.candidate_page_response(result)
+    response.candidates = [
+        await _candidate_response(http_request, request.scope_id, value) for value in result.candidates
+    ]
+    return response
 
 
 async def get_artifact_candidate(
@@ -3090,7 +3188,7 @@ async def get_artifact_candidate(
 ) -> ArtifactCandidate:
     result = await application.review.for_scope(request.scope_id).get(mapping.get_candidate_request(request))
     await _require_candidate_artifact_owner(http_request, request.scope_id, result)
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def approve_artifact_candidate(
@@ -3127,15 +3225,16 @@ async def approve_artifact_candidate(
             idempotency_key=f"candidate-artifact-owner:{request.scope_id}:{request.candidate_id}",
             context=_access_audit_context(APPROVE_ARTIFACT_CANDIDATE.operation_id),
         )
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def reject_artifact_candidate(
     request: RejectArtifactCandidateRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
 ) -> ArtifactCandidate:
     result = await application.review.for_scope(request.scope_id).reject(mapping.reject_candidate_request(request))
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def revise_artifact_candidate(
@@ -3154,7 +3253,7 @@ async def revise_artifact_candidate(
         if attestation.proposed_owner != _require_principal():
             raise AccessDeniedError
     result = await application.review.for_scope(request.scope_id).revise(mapping.revise_candidate_request(request))
-    return mapping.candidate_response(result)
+    return await _candidate_response(http_request, request.scope_id, result)
 
 
 async def _require_candidate_artifact_owner(
@@ -3452,6 +3551,54 @@ def _add_route(
     )
 
 
+# Collection permission allows identity discovery, but content remains unavailable
+# until every committed identity has its immutable owner relation.
+_COLLECTION_CONTENT_OPERATIONS = frozenset({
+    "search_memory",
+    "list_memory_entries",
+    "list_memory_changes",
+    "prepare_context",
+    "list_managed_skills",
+    "list_artifact_candidates",
+    "get_artifact_candidate",
+    "list_artifacts",
+    "get_artifact",
+    "get_artifact_revision",
+    "prepare_handoff",
+    "activate_handoff",
+    "finalize_handoff",
+    "handoff_current_work",
+    "generate_experience",
+    "generate_skill",
+})
+
+
+async def _require_selection_content_ready(request: Request, selection: ScopeSelection) -> None:
+    if access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode) is None:
+        return
+    scopes = _require_scope_application(request)
+    for scope in await scopes.resolve_selection(_domain_scope_selection(selection)):
+        await require_scope_content_ready(request, scope.scope_id)
+
+
+async def require_scope_content_ready(request: Request, scope_id: str) -> None:
+    """Check an already-authorized collection using content-free catalog identities."""
+
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    if access is None:
+        return
+    application = _require_application(request)
+    for identity in await application.records.for_scope(scope_id).logical_artifacts():
+        resource = ResourceRef.artifact(
+            scope_id,
+            family=identity.family,
+            artifact_id=identity.artifact_id,
+            selector=None if identity.entry_id is None else MemoryEntrySelector(entry_id=identity.entry_id),
+        )
+        if await access.artifact_owner(resource) is None:
+            raise AccessUnavailableError("artifact_owner_pending")
+
+
 def _authorization_dependency(
     operation: Operation[Any, Any],
 ) -> Callable[[Request], Awaitable[None]]:
@@ -3475,6 +3622,13 @@ def _authorization_dependency(
                 await access.require(current_principal(), action, resource, context=context)
             else:
                 await access.require_all(current_principal(), checks, context=context)
+            if operation.operation_id in _COLLECTION_CONTENT_OPERATIONS:
+                for scope_id in sorted({
+                    resource.scope_id
+                    for _, resource in checks
+                    if resource.type is AccessResourceType.SCOPE and resource.scope_id is not None
+                }):
+                    await require_scope_content_ready(request, scope_id)
 
     return authorize
 

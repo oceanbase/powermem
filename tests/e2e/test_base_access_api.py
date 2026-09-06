@@ -96,6 +96,7 @@ def test_source_and_artifact_api_round_trip(tmp_path: Path) -> None:
                 "content",
                 "position",
                 "content_digest",
+                "receipt_identity",
             }
             null_source = await client.create_source(scope_id, CreateSourceRequest(content=None))
             assert null_source.content is None

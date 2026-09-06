@@ -180,7 +180,7 @@ Execution Plane:   宿主是否安装、加载或执行 Skill/Prompt，以及能
    ```json
    {
      "family": "handoff",
-     "artifact_id": "project:payments",
+     "artifact_id": "handoff",
      "revision": 12
    }
    ```
@@ -472,7 +472,13 @@ A、相应 grant administrator 或 scope admin 可以撤销其管理边界内的
 客户端不能通过 JSON body 声明该 actor。
 
 现有 Handoff Receipt 的 `receiver` 字段继续作为记录内容。Server 另外记录产生 Receipt 的 authenticated Principal，
-两者不一致时拒绝 `accepted` 或在非 accepted Receipt 中明确标记 mismatch；绝不能把自由文本 `receiver` 当作 Principal。
+两者不一致时拒绝 `accepted`；非 accepted Receipt 可以保留自报 receiver，但必须返回
+`receipt_identity.principal` 和 `receipt_identity.receiver_identity_matches=false`。该身份记录复用现有
+`pc_access_audit` 表，以 `handoff.receipt.identity` 操作的不可变审计事件持久化，不新增表或字段。事件 ID 由操作名、
+Scope ID 和 Source ID 的无歧义编码计算得到，并通过现有唯一约束保证同一 Source 的归属不能被并发请求或重试覆盖。
+该事件表示服务器已锁定回执提交者身份，不代表回执正文已写入或工作已完成；它在 Source 捕获前写入，并与 Receipt
+一起保留，不能作为普通短期日志清理。身份信息随 acknowledge 响应及 Receipt Source 的 GET 响应返回，不改写 Source
+正文或 content digest。缺少该身份记录的 Receipt 读取返回 503。绝不能把自由文本 `receiver` 当作 Principal。
 
 ## Resource model
 
@@ -580,6 +586,27 @@ catalog 回填或推断 owner，也不提供通用 owner repair 流程。未经�
 enforced mode 时，其中的 Artifact 按设计保持不可用。若 domain persistence 已成功但 owner establishment 失败，请求仍
 fail closed；只有明确支持幂等重放的业务流程才能通过重试修复 relation。通用 transactional outbox 和 operator recovery
 流程属于本 RFC 之外的未来工作。
+
+### 内置关系型存储
+
+内置 Provider 和嵌入式 Casbin Provider 使用五张 Server-owned Access 表：
+
+| 表 | 用途 |
+| --- | --- |
+| `pc_access_relationships` | 角色 Binding、历史状态和单例角色的唯一占用键 |
+| `pc_access_owners` | 不可变 Artifact 所有权和 Candidate 拟定归属凭证 |
+| `pc_access_relationship_heads` | 已提交的授权版本号 |
+| `pc_access_idempotency` | Binding 变更的请求指纹和幂等重放结果 |
+| `pc_access_audit` | 权限审计事件和可信 Handoff Receipt 身份凭证 |
+
+`pc_access_owners.owner_kind` 区分 `artifact` 和 `candidate`。Candidate 凭证不建立 Artifact 所有权、
+不授予权限，也不出现在 owned-resource discovery 中。批准时独立建立 Artifact owner 记录，同时保留原始
+Candidate 凭证。身份键保持 Scope、Family 和 Memory Entry 的隔离；Candidate ID 在同一 Scope 内跨 Family 唯一。
+
+单例 Binding 通过 `pc_access_relationships` 中可空且唯一的 `singleton_key` 占用角色；普通 Binding 的该字段为
+空。撤销释放占用键；替换在同一事务中释放旧键并插入后继 Binding。新授权可以回收已过期的键，但保留旧 Binding
+及其幂等重放记录。数据库唯一约束保证并发竞争不会产生多个接收者。Binding 变更先锁定授权版本，再锁定 Binding
+行，过期比较使用 UTC 时间。占用键被回收的过期 Binding 不允许再被替换；撤销它也不会释放当前接收者的占用键。
 
 ## Action vocabulary
 
@@ -895,7 +922,8 @@ Family operation 映射如下。表中的 “scope or logical resource” 由 Pr
 | Experience/Skill propose/generate new identity | `scope.contribute`；Server 记录 caller 为 proposed owner |
 | Experience/Skill proposal targeting existing identity | `scope.contribute` plus `artifact.write` on that identity |
 | Candidate list/get | `scope.read`; logical Artifact grant 不暴露 Candidate |
-| Candidate revise/approve/reject | `scope.review` |
+| Candidate revise | `scope.review`，且 authenticated Principal 必须等于 Server 保存的原提议者 |
+| Candidate approve/reject | `scope.review`；approve 还要求有效的 proposed-owner attestation |
 | managed Skill lifecycle mutation | `artifact.write` on logical Skill |
 | host-local Skill projection status/publish/unpublish | `server.observe` and `artifact.read` on logical Skill |
 | remote Skill target administration | `scope.admin` |
@@ -924,10 +952,7 @@ Principal Access。Public status 不返回 host path、Agent home、credential �
   post:
     operationId: commit_handoff
     x-powercontext-access:
-      action: scope.contribute
-      resource:
-        type: scope
-        scope-id-from: body.scope_id
+      resolver: commit_handoff_access
 ```
 
 具有 selection-dependent policy 的 operation 使用已注册 resolver name，而不是在 YAML 中嵌入可执行表达式：
@@ -994,6 +1019,15 @@ HTTP 是完整远程 contract，MCP 和 Dashboard 复用同一 operation 和 PEP
 HTTP 和 MCP 对同一 Principal、action、resource、policy revision 必须得到相同 allow/deny。Adapter conformance test 覆盖
 这一保证。
 
+Dashboard 的 `/shared` 页面不要求 `server.observe` 或 `scope.read`。它提供按 Family 筛选的授权资源列表和
+Handoff 收件箱。接收方显式选择资源后，Server 先检查逻辑资源 read 权限，再解析当前版本；Memory 只解析所选
+entry 的 citation，不读取其他 entry 正文。Handoff 的“检查 Handoff 及证据”调用 Continue，回执针对所选确切
+Revision，接受前要求用户确认 live state、capability 和 authorization。表单 receiver 固定为当前 Principal。
+拥有共享管理权限的用户可按规范 Principal ID 创建只读或 receiver 授权、指定过期时间并撤销现有授权。
+
+Candidate 响应中的 `permissions.can_revise/can_approve/can_reject` 是当前调用方的 UI 提示。Review 页面据此禁用操作，
+并说明修改仅限拥有 review 权限的原提议者。每次提交仍重新执行 PEP；页面缓存的提示不能授予权限。
+
 ## Listing and pagination
 
 列表最容易泄漏 Project 名称、scope ID、Artifact Family identity、Handoff objective 或 Candidate metadata。安全顺序为：
@@ -1020,6 +1054,11 @@ Artifact logical receiver 通过 `/v1/access/resources/list` 的 Resource Kind �
 对应聚合查询。发布 target 不是授权资源，不出现在该列表中。可以发布所选 Skill Revision 的 Principal 通过 Skill domain
 preflight 取得脱敏 target 选项；详细运维状态通过受 `server.observe` 或 `server.admin` 保护的 Server operation 查询。
 
+Scope 级 collection 权限通过后，Server 先从内容为空的 identity 目录检查 committed Artifact 和 Memory entry 的
+owner 是否就绪，再读取正文或准备上下文。任何 identity 缺少 owner 时，整个聚合请求返回 503
+`artifact_owner_pending`，包括 Memory list/search、Context Prepare、Artifact catalog、Dashboard Skill library 和 Report。
+对无匹配授权的调用方，缺少 owner 与已有但不可见的资源统一返回 403，避免暴露存在性。
+
 ## Audit and diagnostics
 
 Access Audit 是 append-only Server security record，至少包含：
@@ -1039,7 +1078,9 @@ Audit 不包含：
 - 任意 exception fields、configured PDP URL 或 provider 原始 response；
 - email、display name 或不必要的目录属性。
 
-普通 log、metric 和 trace 使用同样的数据最小化边界。Public readiness 只返回稳定 component state 和安全 reason，详细
+普通 log、metric 和 trace 使用同样的数据最小化边界。Public readiness 在 5 秒内实际探测 PDP decision、audit、relationship/owner/Receipt identity 存储；拒绝本身是
+正常探测结果，超时、异常或无效 decision 则标记 access provider 为 not_ready 并返回 503。探测不写入授权或审计。
+响应只返回稳定 component state 和安全 reason，详细
 provider diagnostics 留在受保护的 operator channel。
 
 ## Consistency and failure recovery

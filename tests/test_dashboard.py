@@ -37,6 +37,23 @@ from powercontext.server.web import _skill_projection_response
 _AUTH_HEADERS = {"Authorization": "Bearer dashboard-secret"}
 
 
+def test_dashboard_scripts_revalidate_cached_modules_after_an_update(tmp_path) -> None:
+    app = create_server_app(
+        settings=ServerSettings(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'dashboard-cache.db'}"),
+            mcp=McpConfig(enabled=False),
+        )
+    )
+    with TestClient(app) as client:
+        for path in ("/static/shared.js", "/static/auth.js?v=request-id-v1", "/static/page-ui.js", "/static/site.css"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert response.headers.get("Cache-Control") == "no-cache"
+            cached = client.get(path, headers={"If-None-Match": response.headers["ETag"]})
+            assert cached.status_code == 304
+            assert cached.headers["Cache-Control"] == "no-cache"
+
+
 def test_dashboard_is_enabled_by_default_without_authentication_or_scopes(tmp_path, monkeypatch) -> None:
     for name in (
         "POWERCONTEXT_SERVER_ACCESS_MODE",
@@ -209,7 +226,7 @@ def test_dashboard_is_the_authenticated_server_ui_entry(tmp_path) -> None:
     assert 'id="review-create-skill-revision"' in review.text
     assert 'id="review-revision-title"' in review.text
     assert 'id="review-publish-dialog"' in review.text
-    assert "review.js?v=standard-packages-v1" in review.text
+    assert "review.js?v=" in review.text
     returned = {item["scope_id"]: item for item in scopes.json()}
     assert returned[first_scope["scope_id"]]["display_name"] == "PsiACE"
     assert returned[first_scope["scope_id"]]["summary"] == "Personal context"

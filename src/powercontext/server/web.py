@@ -26,6 +26,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, PackageLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.types import Scope
+from typing_extensions import override
 
 from powercontext._logging import log_safely
 from powercontext.artifacts import ArtifactRef
@@ -50,10 +52,13 @@ from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
     ArtifactLifecycleState,
 )
+from powercontext.builtin.records import BaseValueNotFoundError
 from powercontext.builtin.runtime import GetSkillRequest, ListExternalSkillsRequest
 from powercontext.builtin.scope import ScopeNotFoundError
 from powercontext.errors import ArtifactNotFoundError
 from powercontext.http import (
+    AccessResource,
+    ArtifactAccessResource,
     ErrorDetail,
     ErrorResponse,
     SkillPackageFile,
@@ -64,6 +69,8 @@ from powercontext.limits import MAX_ARTIFACT_ID_LENGTH
 from powercontext.server.authz import (
     AccessAction,
     AccessAuditContext,
+    AccessResourceType,
+    AuthorizedResourceFilter,
     ResourceRef,
     access_control_for_mode,
 )
@@ -79,6 +86,16 @@ _PAGE_HEADERS = {
         "connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'"
     ),
 }
+
+
+class _DashboardStaticFiles(StaticFiles):
+    @override
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        if path.endswith((".js", ".css")):
+            # Revalidate module dependencies as well as page entry scripts.
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 class DashboardScope(BaseModel):
@@ -354,9 +371,10 @@ def mount_web_ui(  # noqa: C901
         templates.env.get_template("pages/dashboard.html")
         templates.env.get_template("pages/review.html")
         templates.env.get_template("pages/skills.html")
+        templates.env.get_template("pages/shared.html")
     if handoff_report_enabled:
         templates.env.get_template("pages/handoff_report.html")
-    static_files = StaticFiles(packages=[("powercontext.server", "static")])
+    static_files = _DashboardStaticFiles(packages=[("powercontext.server", "static")])
 
     router = APIRouter(include_in_schema=False)
 
@@ -410,6 +428,53 @@ def mount_web_ui(  # noqa: C901
             headers=_PAGE_HEADERS,
         )
 
+    async def shared_page(request: Request) -> Response:
+        return templates.TemplateResponse(
+            request=request,
+            name="pages/shared.html",
+            context={
+                "active_page": "shared",
+                "dashboard_enabled": True,
+                "skills_enabled": True,
+                "review_enabled": True,
+                "handoff_report_enabled": handoff_report_enabled,
+                "home_route": "dashboard_home",
+                "authentication_required": authentication_required,
+            },
+            headers=_PAGE_HEADERS,
+        )
+
+    async def read_shared_resource(resource: ArtifactAccessResource, request: Request) -> JSONResponse:
+        # UI support endpoint: authorize the logical identity before selecting a body.
+        from powercontext.server.app import _access_resource
+        from powercontext.server.authz import AccessUnavailableError
+
+        access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+        if access is None:
+            raise AccessUnavailableError("access_disabled")
+        await access.require(
+            current_principal(),
+            AccessAction.ARTIFACT_READ,
+            _access_resource(AccessResource(root=resource)),
+            context=_dashboard_access_context("dashboard_shared_read"),
+        )
+        application = request.app.state.application
+        if application is None:
+            return _web_error(503, "runtime_not_ready", "The Runtime is not ready.")
+        records = application.records.for_scope(resource.scope_id)
+        try:
+            if resource.identity.family == "memory":
+                if resource.selector is None:
+                    from powercontext.server.authz import AccessInvalidRequestError
+
+                    raise AccessInvalidRequestError("memory-entry")
+                result = await records.current_memory_entry(resource.identity.artifact_id, resource.selector.entry_id)
+            else:
+                result = await records.get_artifact(resource.identity.family, resource.identity.artifact_id)
+        except (ArtifactNotFoundError, BaseValueNotFoundError):
+            return _web_error(404, "not_found", "The requested resource was not found.")
+        return JSONResponse(result.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
     async def handoff_report_page(request: Request) -> Response:
         return templates.TemplateResponse(
             request=request,
@@ -428,8 +493,7 @@ def mount_web_ui(  # noqa: C901
 
     async def list_dashboard_scopes(request: Request, response: Response) -> tuple[DashboardScope, ...]:
         response.headers["Cache-Control"] = "no-store"
-        scopes = await _dashboard_scopes(request.app.state.application)
-        return await _visible_dashboard_scopes(request, scopes)
+        return await _visible_dashboard_scopes(request)
 
     async def list_managed_skills(
         request: DashboardSkillLibraryRequest,
@@ -441,6 +505,9 @@ def mount_web_ui(  # noqa: C901
             AccessAction.SCOPE_READ,
             operation="dashboard_skills_library",
         )
+        from powercontext.server.app import require_scope_content_ready
+
+        await require_scope_content_ready(http_request, request.scope_id)
         application = http_request.app.state.application
         if application is None:
             return _web_error(503, "runtime_not_ready", "The Runtime is not ready.")
@@ -557,6 +624,10 @@ def mount_web_ui(  # noqa: C901
         )
 
     if dashboard_enabled:
+        router.add_api_route("/shared", shared_page, methods=["GET"], response_class=HTMLResponse, name="shared_inbox")
+        router.add_api_route(
+            "/dashboard/shared/read", read_shared_resource, methods=["POST"], name="dashboard_shared_read"
+        )
         router.add_api_route(
             "/",
             dashboard_page,
@@ -682,27 +753,47 @@ async def _dashboard_managed_skill(
     return application, skill
 
 
-async def _visible_dashboard_scopes(
-    request: Request,
-    dashboard_scopes: tuple[DashboardScope, ...],
-) -> tuple[DashboardScope, ...]:
-    access = access_control_for_mode(
-        request.app.state.access_control,
-        mode=request.app.state.access_mode,
-    )
-    if access is None or not dashboard_scopes:
-        return dashboard_scopes
+async def _visible_dashboard_scopes(request: Request) -> tuple[DashboardScope, ...]:
+    access = access_control_for_mode(request.app.state.access_control, mode=request.app.state.access_mode)
+    application = request.app.state.application
+    if access is None:
+        return await _dashboard_scopes(application)
     principal = current_principal()
     context = _dashboard_access_context("dashboard_scopes")
-    for item in dashboard_scopes:
-        await access.bootstrap_static_scope(principal, item.scope_id, context=context)
-    checks = tuple((AccessAction.SCOPE_READ, ResourceRef.scope(item.scope_id)) for item in dashboard_scopes)
-    decisions = await access.check_batch(
-        principal,
-        checks,
-        context=context,
-    )
-    return tuple(item for item, decision in zip(dashboard_scopes, decisions, strict=True) if decision.allowed)
+    if access.uses_static_preset(principal):
+        await access.require(
+            principal, AccessAction.SERVER_ADMIN, ResourceRef.server(access.deployment_id), context=context
+        )
+        for scope in await _dashboard_scopes(application):
+            await access.bootstrap_static_scope(principal, scope.scope_id, context=context)
+
+    scopes: dict[str, DashboardScope] = {}
+
+    deployment_id = access.deployment_id
+
+    async def query_scopes(authorized: AuthorizedResourceFilter) -> tuple[ResourceRef, ...]:
+        scope_ids = {resource.scope_id for resource in authorized.exact_resources if resource.scope_id is not None}
+        all_scopes = any(parent == ResourceRef.server(deployment_id) for parent in authorized.parent_constraints)
+        selected = await _dashboard_scopes(application, scope_ids=None if all_scopes else tuple(sorted(scope_ids)))
+        scopes.update((scope.scope_id, scope) for scope in selected)
+        return tuple(ResourceRef.scope(scope.scope_id) for scope in selected)
+
+    cursor = None
+    visible: list[DashboardScope] = []
+    while True:
+        page = await access.list_resources(
+            principal,
+            action=AccessAction.SCOPE_READ,
+            resource_type=AccessResourceType.SCOPE,
+            context=context,
+            query_resources=query_scopes,
+            cursor=cursor,
+            limit=500,
+        )
+        visible.extend(scopes[resource.scope_id] for resource in page.items if resource.scope_id is not None)
+        cursor = page.next_cursor
+        if cursor is None:
+            return tuple(visible)
 
 
 async def _authorize_dashboard_skill(
@@ -783,7 +874,7 @@ def _dashboard_access_context(operation: str) -> AccessAuditContext:
     return AccessAuditContext(transport="http", operation=operation, request_id=current_request_id())
 
 
-async def _dashboard_scopes(application) -> tuple[DashboardScope, ...]:
+async def _dashboard_scopes(application, *, scope_ids: tuple[str, ...] | None = None) -> tuple[DashboardScope, ...]:
     if application is None or application.scopes is None:
         return ()
     return tuple(
@@ -793,7 +884,7 @@ async def _dashboard_scopes(application) -> tuple[DashboardScope, ...]:
             summary=scope.summary,
             parent_scope_id=scope.parent_scope_id,
         )
-        for scope in await application.scopes.list()
+        for scope in await application.scopes.list(scope_ids=scope_ids)
     )
 
 

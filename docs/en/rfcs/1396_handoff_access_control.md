@@ -183,7 +183,7 @@ Assume A administers the `project:payments` Workstream and has prepared a transf
    ```json
    {
      "family": "handoff",
-     "artifact_id": "project:payments",
+     "artifact_id": "handoff",
      "revision": 12
    }
    ```
@@ -501,6 +501,16 @@ The existing Handoff Receipt `receiver` remains record content. The Server separ
 Principal that produced the Receipt. If they differ, the Server rejects `accepted` or explicitly records the mismatch
 for a non-accepted Receipt. It never treats the free-form `receiver` as a Principal.
 
+The acknowledge response and Receipt Source GET expose `receipt_identity.principal` and
+`receipt_identity.receiver_identity_matches`. This immutable attestation reuses the existing `pc_access_audit` table
+with operation `handoff.receipt.identity`; no table or column is added. Its event ID hashes an unambiguous encoding of
+the operation, Scope ID, and Source ID. The existing unique constraint prevents concurrent requests or retries from
+replacing the attribution. This event records the reservation of the authenticated submitter, not successful Receipt
+capture or completed work. It is written before Source capture and retained with the Receipt, rather than purged as a
+short-lived log. It does not rewrite the Source body or its content digest. An accepted receipt with a mismatched
+receiver is rejected; other statuses retain the self-reported receiver with `receiver_identity_matches=false`.
+Reading a Receipt without this attestation returns 503.
+
 ## Resource model
 
 Internal authorization requests use structured `ResourceRef` values. This avoids concatenating identifiers that may
@@ -619,6 +629,30 @@ repair workflow. Switching such a catalog to enforced mode without a separate op
 Artifacts unavailable by design. If domain persistence succeeds but owner establishment fails, the request still
 fails closed; only a business flow that explicitly supports idempotent replay may repair the relation on retry. A
 general transactional outbox and operator recovery procedure are future work outside this RFC.
+
+### Built-in relational persistence
+
+The built-in and embedded Casbin providers use five Server-owned Access tables:
+
+| Table | Purpose |
+| --- | --- |
+| `pc_access_relationships` | Role Bindings, their history, and unique singleton occupancy |
+| `pc_access_owners` | Immutable Artifact ownership and Candidate proposed-owner attestations |
+| `pc_access_relationship_heads` | The committed authorization revision |
+| `pc_access_idempotency` | Binding mutation request fingerprints and replay results |
+| `pc_access_audit` | Access audit events and trusted Handoff Receipt identity attestations |
+
+`pc_access_owners.owner_kind` distinguishes `artifact` from `candidate`. Candidate attestations do not establish
+Artifact ownership, grant permissions, or appear in owned-resource discovery. Approval establishes a separate
+Artifact ownership record while retaining the original Candidate attestation. The identity keys preserve Scope,
+Family, and Memory Entry boundaries; a Candidate ID is unique within its Scope across Families.
+
+A singleton Binding occupies a nullable unique `singleton_key` on `pc_access_relationships`; ordinary Bindings
+leave it null. Revocation releases the key, and replacement releases the old key and inserts its successor in one
+transaction. A new grant can reclaim an expired key without deleting the historical Binding or its replay record.
+The database unique constraint prevents competing claims from creating multiple receivers. Binding mutations lock
+the authorization revision before Binding rows, and expiration comparisons use UTC timestamps. A reclaimed,
+expired Binding cannot be replaced or release the current receiver's key when revoked.
 
 ## Action vocabulary
 
@@ -955,7 +989,8 @@ client-selected bypass path:
 | Experience/Skill propose or generate a new identity | `scope.contribute`; the Server attests the caller as proposed owner |
 | Experience/Skill proposal targeting an existing identity | `scope.contribute` plus `artifact.write` on that identity |
 | Candidate list/get | `scope.read`; a logical Artifact grant does not expose Candidates |
-| Candidate revise/approve/reject | `scope.review` |
+| Candidate revise | `scope.review` and the authenticated Principal must match the original proposer attested by the Server |
+| Candidate approve/reject | `scope.review`; approval also requires a valid proposed-owner attestation |
 | Managed Skill lifecycle mutation | `artifact.write` on the logical Skill |
 | Host-local Skill projection status/publish/unpublish | `server.observe` and `artifact.read` on the logical Skill |
 | Remote Skill target administration | `scope.admin` |
@@ -986,10 +1021,7 @@ extension as `Operation.access`; Server `_add_route()` uses it to assemble the P
   post:
     operationId: commit_handoff
     x-powercontext-access:
-      action: scope.contribute
-      resource:
-        type: scope
-        scope-id-from: body.scope_id
+      resolver: commit_handoff_access
 ```
 
 An operation whose policy depends on selection names a registered resolver rather than embedding executable
@@ -1063,6 +1095,17 @@ HTTP is the complete remote contract. MCP and the Dashboard reuse the same opera
 HTTP and MCP return the same allow or deny for the same Principal, action, resource, and policy revision. Adapter
 conformance tests protect that guarantee.
 
+The Dashboard `/shared` page requires neither `server.observe` nor `scope.read`. It provides a Family-filtered
+resource list and Handoff inbox. Selecting a resource checks logical read permission before resolving its current
+version. Memory resolves only the selected entry citation without reading other entry bodies. Inspecting a Handoff
+calls Continue; a receipt uses the selected exact Revision. Acceptance requires explicit live-state, capability, and
+authorization confirmations, with the receiver fixed to the current Principal. Callers with sharing authority can
+enter a canonical recipient ID, choose a viewer or receiver role and expiration, and revoke active shares.
+
+Candidate responses expose advisory `permissions.can_revise/can_approve/can_reject` fields for the current caller.
+The Review page disables unavailable actions and explains that revision requires both review permission and original
+proposal ownership. Every submitted action still executes the PEP; cached UI hints do not grant authority.
+
 ## Listing and pagination
 
 Lists can leak Project names, scope IDs, Artifact Family identities, Handoff objectives, or Candidate metadata. The
@@ -1093,6 +1136,12 @@ publication target is not an authorization resource and does not appear in this 
 publish a selected Revision of the Skill obtains redacted target choices through the Skill-domain preflight. Detailed operational
 status is queried through a Server operation protected by `server.observe` or `server.admin`.
 
+After authorizing a scope collection, the Server checks committed Artifact and Memory entry owners through a
+content-free identity catalog before reading bodies or preparing context. A missing owner makes the whole aggregate
+return 503 `artifact_owner_pending`, including Memory list/search, Context Prepare, Artifact catalogs, the Dashboard
+Skill library, and reports. Callers without a matching grant receive the same 403 for missing-owner and existing but
+invisible resources, preventing existence disclosure.
+
 ## Audit and diagnostics
 
 Access Audit is an append-only Server security record. It contains at least:
@@ -1112,7 +1161,9 @@ Audit does not contain:
 - arbitrary exception fields, configured PDP URLs, or raw provider responses;
 - email addresses, display names, or unnecessary directory attributes.
 
-Ordinary logs, metrics, and traces use the same data-minimization boundary. Public readiness returns only stable
+Ordinary logs, metrics, and traces use the same data-minimization boundary. Public readiness probes PDP decisions and the audit, relationship, owner, and Receipt identity stores within a
+five-second bound. A valid deny is a successful probe; exceptions, timeouts, or invalid decisions mark the access
+provider not ready and return 503. The probe creates no grants or audit events. Public readiness returns only stable
 component states and safe reasons. Detailed provider diagnostics stay in a protected operator channel.
 
 ## Consistency and failure recovery

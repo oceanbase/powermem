@@ -102,8 +102,7 @@ _HARNESS_SCOPE_PREFIXES = (
 )
 _SCOPE_TABLES = (
     "pc_access_audit",
-    "pc_access_candidate_owners",
-    "pc_access_artifact_owners",
+    "pc_access_owners",
     "pc_access_relationships",
     "pc_memory_vector_entries",
     "pc_memory_entry_heads",
@@ -127,7 +126,6 @@ _SCOPE_TABLES = (
     "pc_scope_settings",
     "pc_scopes",
 )
-_ACCESS_BINDING_LEASES_TABLE = "pc_access_binding_leases"
 PRODUCER_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -2203,39 +2201,6 @@ async def _purge_database_scopes(
         async with profile.database.transaction() as connection:
             tables = await _existing_scope_tables(connection)
             before = await _scope_counts(connection, scopes, tables=tables)
-            table_names = set(
-                await connection.run_sync(lambda sync_connection: inspect(sync_connection).get_table_names())
-            )
-            access_binding_ids: tuple[str, ...] = ()
-            lease_count_before = 0
-            if "pc_access_relationships" in table_names and scopes:
-                access_binding_ids = tuple(
-                    str(value)
-                    for value in (
-                        await connection.execute(
-                            text(
-                                "SELECT binding_id FROM pc_access_relationships WHERE scope_id IN :scope_ids"
-                            ).bindparams(bindparam("scope_ids", expanding=True)),
-                            {"scope_ids": scopes},
-                        )
-                    ).scalars()
-                )
-            if _ACCESS_BINDING_LEASES_TABLE in table_names and access_binding_ids:
-                lease_count_before = int(
-                    await connection.scalar(
-                        text(
-                            f"SELECT COUNT(*) FROM {_ACCESS_BINDING_LEASES_TABLE} WHERE binding_id IN :binding_ids"  # noqa: S608
-                        ).bindparams(bindparam("binding_ids", expanding=True)),
-                        {"binding_ids": access_binding_ids},
-                    )
-                    or 0
-                )
-                await connection.execute(
-                    text(
-                        f"DELETE FROM {_ACCESS_BINDING_LEASES_TABLE} WHERE binding_id IN :binding_ids"  # noqa: S608
-                    ).bindparams(bindparam("binding_ids", expanding=True)),
-                    {"binding_ids": access_binding_ids},
-                )
             if scopes:
                 for table_name in tables:
                     statement = text(
@@ -2248,8 +2213,6 @@ async def _purge_database_scopes(
             table_name: sum(scope_counts[table_name] for scope_counts in before.values())
             for table_name in _SCOPE_TABLES
         }
-        if lease_count_before:
-            rows_before[_ACCESS_BINDING_LEASES_TABLE] = lease_count_before
         rows_after = {
             table_name: sum(scope_counts[table_name] for scope_counts in after.values()) for table_name in _SCOPE_TABLES
         }

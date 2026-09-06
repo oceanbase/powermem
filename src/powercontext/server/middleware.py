@@ -37,6 +37,7 @@ _PUBLIC_PATHS = frozenset({
     "/handoff-reports",
     "/reviews",
     "/skills",
+    "/shared",
     "/health/live",
     "/health/ready",
     "/v1/skill/remote/target/enroll",

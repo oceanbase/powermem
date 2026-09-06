@@ -3617,6 +3617,24 @@ components:
           items:
             $ref: "#/components/schemas/ScopeBindingKey"
           default: []
+    CandidatePermissions:
+      type: object
+      additionalProperties: false
+      required: [can_revise, can_approve, can_reject]
+      properties:
+        can_revise: {type: boolean}
+        can_approve: {type: boolean}
+        can_reject: {type: boolean}
+    HandoffReceiptIdentity:
+      type: object
+      additionalProperties: false
+      required: [principal, receiver_identity_matches]
+      description: Server-owned attestation stored separately from the immutable untrusted Receipt.
+      properties:
+        principal:
+          $ref: "#/components/schemas/AccessPrincipal"
+        receiver_identity_matches:
+          type: boolean
     ArtifactCandidate:
       type: object
       additionalProperties: false
@@ -3633,6 +3651,10 @@ components:
         - result_artifact
         - decision_reason
       properties:
+        permissions:
+          $ref: "#/components/schemas/CandidatePermissions"
+          nullable: true
+          description: Current Principal permissions in enforced mode; advisory and checked again on mutation.
         candidate_id:
           type: string
           minLength: 1
@@ -4346,6 +4368,9 @@ components:
       additionalProperties: false
       required: [resolution, receipt]
       properties:
+        receipt_identity:
+          $ref: "#/components/schemas/HandoffReceiptIdentity"
+          nullable: true
         resolution:
           $ref: "#/components/schemas/HandoffResolution"
         receipt:
@@ -6903,6 +6928,10 @@ components:
       type: object
       required: [scope_id, source_type, source_id, content, position, content_digest]
       properties:
+        receipt_identity:
+          $ref: "#/components/schemas/HandoffReceiptIdentity"
+          nullable: true
+          description: Server-owned identity attestation when this Source contains an enforced-mode Handoff Receipt.
         scope_id:
           type: string
           minLength: 1

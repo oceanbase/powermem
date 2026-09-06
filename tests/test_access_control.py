@@ -15,11 +15,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from hashlib import sha256
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-from sqlalchemy import insert
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
 from powercontext.server.authz import (
@@ -47,7 +46,6 @@ from powercontext.server.authz import (
 )
 from powercontext.server.authz.composition import open_builtin_access_control
 from powercontext.server.authz.repository import (
-    ACCESS_BINDING_LEASES_TABLE,
     ACCESS_TABLES,
     RelationalAccessRepository,
 )
@@ -244,47 +242,6 @@ def test_singleton_binding_replacement_is_atomic() -> None:
     asyncio.run(scenario())
 
 
-def test_singleton_binding_fails_closed_when_a_claimed_lease_binding_is_not_visible() -> None:
-    async def scenario() -> None:
-        async with SQLiteProfile.open(SQLiteConfig(), tables=ACCESS_TABLES) as profile:
-            repository = RelationalAccessRepository(profile.database)
-            await _seed_server_admin(repository)
-            service = AccessControlService(
-                BuiltinAuthorizationProvider(repository),
-                relationships=repository,
-                audit=repository,
-            )
-            handoff = ResourceRef.artifact("scope-a", family="handoff", artifact_id="concurrent-handoff")
-            await service.establish_artifact_owner(
-                handoff,
-                ALICE,
-                idempotency_key="owner-concurrent-handoff",
-                context=AUDIT,
-            )
-            async with profile.database.transaction() as connection:
-                await connection.execute(
-                    insert(ACCESS_BINDING_LEASES_TABLE).values(
-                        resource_key_hash=sha256(handoff.key.encode()).hexdigest(),
-                        role=AccessRole.HANDOFF_RECEIVER.value,
-                        binding_id="not-yet-visible-binding",
-                    )
-                )
-
-            with pytest.raises(AccessConflictError, match="maximum active Bindings"):
-                await service.create_binding(
-                    ADMIN,
-                    CreateBinding(
-                        subject=BOB,
-                        resource=handoff,
-                        role=AccessRole.HANDOFF_RECEIVER,
-                        idempotency_key="concurrent-handoff-receiver",
-                    ),
-                    context=AUDIT,
-                )
-
-    asyncio.run(scenario())
-
-
 def test_access_role_cardinalities_are_explicit() -> None:
     assert ROLE_CARDINALITIES[AccessRole.HANDOFF_RECEIVER] is AccessRoleCardinality.ONE_PER_RESOURCE
     assert ROLE_CARDINALITIES[AccessRole.ARTIFACT_OWNER] is AccessRoleCardinality.ONE_PER_RESOURCE
@@ -446,7 +403,7 @@ def test_missing_owner_is_fail_closed_and_owner_is_immutable() -> None:
         async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as service:
             skill = ResourceRef.artifact("scope-a", family="skill", artifact_id="skill-a")
             with pytest.raises(AccessUnavailableError, match="owner"):
-                await service.require(ADMIN, AccessAction.ARTIFACT_READ, skill, context=AUDIT)
+                await service.require(ADMIN, AccessAction.ARTIFACT_SHARE, skill, context=AUDIT)
             await service.establish_artifact_owner(skill, ALICE, idempotency_key="owner-a", context=AUDIT)
             repeated = await service.establish_artifact_owner(skill, ALICE, idempotency_key="owner-a", context=AUDIT)
             assert repeated.owner == ALICE
@@ -506,3 +463,145 @@ async def _seed_server_admin(repository: RelationalAccessRepository) -> None:
             idempotency_key="seed-admin",
         )
     )
+
+
+@pytest.mark.parametrize("offset_hours", [-7, 8])
+def test_expired_receiver_can_be_reclaimed_once_without_losing_history(offset_hours: int, tmp_path: Path) -> None:
+    async def scenario() -> None:
+        now = datetime(2030, 1, 1, tzinfo=UTC)
+        async with SQLiteProfile.open(
+            SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'access.db'}"), tables=ACCESS_TABLES
+        ) as profile:
+            repository = RelationalAccessRepository(profile.database)
+            await _seed_server_admin(repository)
+            service = AccessControlService(
+                BuiltinAuthorizationProvider(repository, clock=lambda: now),
+                relationships=repository,
+                audit=repository,
+                clock=lambda: now,
+            )
+            handoff = ResourceRef.artifact("scope-expiry", family="handoff", artifact_id="handoff")
+            await service.establish_artifact_owner(handoff, ADMIN, idempotency_key="owner-expiry", context=AUDIT)
+            first = await service.create_binding(
+                ADMIN,
+                CreateBinding(
+                    subject=BOB,
+                    resource=handoff,
+                    role=AccessRole.HANDOFF_RECEIVER,
+                    idempotency_key="expiring-receiver",
+                    expires_at=(now + timedelta(seconds=30)).astimezone(timezone(timedelta(hours=offset_hours))),
+                ),
+                context=AUDIT,
+            )
+            carol = PrincipalRef(type="user", id="carol")
+
+            async def claim(subject: PrincipalRef) -> AccessBinding:
+                return await service.create_binding(
+                    ADMIN,
+                    CreateBinding(
+                        subject=subject,
+                        resource=handoff,
+                        role=AccessRole.HANDOFF_RECEIVER,
+                        idempotency_key=f"claim-{subject.id}",
+                    ),
+                    context=AUDIT,
+                )
+
+            with pytest.raises(AccessConflictError):
+                await claim(ALICE)
+            now += timedelta(seconds=30)
+            results = await asyncio.gather(claim(ALICE), claim(carol), return_exceptions=True)
+            winners = [value for value in results if isinstance(value, AccessBinding)]
+            assert len(winners) == 1, [
+                (type(value).__name__, repr(value.__cause__)) if isinstance(value, Exception) else value
+                for value in results
+            ]
+            assert sum(isinstance(value, AccessConflictError) for value in results) == 1
+            winner = winners[0]
+            assert await repository.get_binding(first.binding_id) == first
+            assert await repository.create_binding(first) == first
+            with pytest.raises(AccessConflictError):
+                await service.replace_binding(
+                    ADMIN,
+                    ReplaceBinding(
+                        binding_id=first.binding_id,
+                        expected_version=first.version,
+                        subject=BOB,
+                        idempotency_key="replace-reclaimed-receiver",
+                    ),
+                    context=AUDIT,
+                )
+            await service.revoke_binding(
+                ADMIN,
+                first.binding_id,
+                expected_version=first.version,
+                idempotency_key="revoke-expired-receiver",
+                context=AUDIT,
+            )
+            assert isinstance(winner.subject, PrincipalRef)
+            assert (
+                await service.require(winner.subject, AccessAction.HANDOFF_ACKNOWLEDGE, handoff, context=AUDIT)
+            ).allowed
+            with pytest.raises(AccessDeniedError):
+                await service.require(BOB, AccessAction.HANDOFF_ACKNOWLEDGE, handoff, context=AUDIT)
+            with pytest.raises(AccessConflictError):
+                await claim(BOB)
+
+    asyncio.run(scenario())
+
+
+def test_candidate_attestation_does_not_grant_or_overwrite_artifact_ownership() -> None:
+    async def scenario() -> None:
+        async with open_builtin_access_control(SQLiteConfig(), bootstrap_administrators=(ADMIN,)) as service:
+            target = ResourceRef.artifact("scope-a", family="skill", artifact_id="same-id")
+            attestation = await service.attest_candidate_owner(
+                scope_id="scope-a",
+                candidate_id="same-id",
+                family="skill",
+                proposed_owner=BOB,
+                target=target,
+                idempotency_key="candidate-same-id",
+            )
+            assert await service.artifact_owner(target) is None
+            assert (
+                await service.list_resources(
+                    BOB,
+                    action=AccessAction.ARTIFACT_READ,
+                    resource_type=AccessResourceType.ARTIFACT,
+                    context=AUDIT,
+                )
+            ).items == ()
+            with pytest.raises(AccessDeniedError):
+                await service.require(BOB, AccessAction.ARTIFACT_WRITE, target, context=AUDIT)
+            await service.establish_artifact_owner(target, ALICE, idempotency_key="formal-same-id", context=AUDIT)
+            assert await service.candidate_owner("scope-a", "same-id") == attestation
+            owner = await service.artifact_owner(target)
+            assert owner is not None and owner.owner == ALICE
+            assert (
+                await service.list_resources(
+                    BOB,
+                    action=AccessAction.ARTIFACT_READ,
+                    resource_type=AccessResourceType.ARTIFACT,
+                    context=AUDIT,
+                )
+            ).items == ()
+            with pytest.raises(AccessConflictError):
+                await service.attest_candidate_owner(
+                    scope_id="scope-a",
+                    candidate_id="same-id",
+                    family="experience",
+                    proposed_owner=BOB,
+                    target=None,
+                    idempotency_key="change-candidate-family",
+                )
+            await service.attest_candidate_owner(
+                scope_id="scope-b",
+                candidate_id="same-id",
+                family="skill",
+                proposed_owner=ALICE,
+                target=None,
+                idempotency_key="candidate-other-scope",
+            )
+            assert await service.candidate_owner("scope-a", "same-id") == attestation
+
+    asyncio.run(scenario())

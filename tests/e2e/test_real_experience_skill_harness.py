@@ -77,7 +77,7 @@ def test_preflight_cleanup_discovers_registered_scope_and_removes_access_rows(tm
             await connection.exec_driver_sql(
                 "CREATE TABLE pc_access_relationships (binding_id TEXT NOT NULL, scope_id TEXT NOT NULL)"
             )
-            await connection.exec_driver_sql("CREATE TABLE pc_access_binding_leases (binding_id TEXT NOT NULL)")
+            await connection.exec_driver_sql("CREATE TABLE pc_access_owners (scope_id TEXT NOT NULL)")
             await connection.execute(
                 text("INSERT INTO pc_scopes (scope_id) VALUES (:scope_id)"),
                 [{"scope_id": "scope:generated"}, {"scope_id": "scope:keep"}],
@@ -103,8 +103,8 @@ def test_preflight_cleanup_discovers_registered_scope_and_removes_access_rows(tm
                 ],
             )
             await connection.execute(
-                text("INSERT INTO pc_access_binding_leases (binding_id) VALUES (:binding_id)"),
-                [{"binding_id": "binding:generated"}, {"binding_id": "binding:keep"}],
+                text("INSERT INTO pc_access_owners (scope_id) VALUES (:scope_id)"),
+                [{"scope_id": "scope:generated"}, {"scope_id": "scope:keep"}],
             )
         cleanup = await _purge_existing_harness_scopes(database)
         async with SQLiteProfile.open(database, tables=()) as profile, profile.database.transaction() as connection:
@@ -116,7 +116,7 @@ def test_preflight_cleanup_discovers_registered_scope_and_removes_access_rows(tm
                     "pc_scopes",
                     "pc_scope_creation_requests",
                     "pc_access_relationships",
-                    "pc_access_binding_leases",
+                    "pc_access_owners",
                 )
             }
         return cleanup, remaining
@@ -128,7 +128,7 @@ def test_preflight_cleanup_discovers_registered_scope_and_removes_access_rows(tm
         "pc_access_relationships": 1,
         "pc_scope_creation_requests": 1,
         "pc_scopes": 1,
-        "pc_access_binding_leases": 1,
+        "pc_access_owners": 1,
     }
     assert cleanup["rows_after"] == {}
     assert cleanup["remaining_row_count"] == 0
@@ -137,5 +137,5 @@ def test_preflight_cleanup_discovers_registered_scope_and_removes_access_rows(tm
         "pc_scopes": 1,
         "pc_scope_creation_requests": 1,
         "pc_access_relationships": 1,
-        "pc_access_binding_leases": 1,
+        "pc_access_owners": 1,
     }

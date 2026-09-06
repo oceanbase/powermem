@@ -33,13 +33,14 @@ import pytest
 import uvicorn
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.runtime.config import InferenceConfig, RuntimeConfig
 from powercontext.client import PowerContextClient
 from powercontext.http import (
     CreateScopeRequest,
     ListMemoryEntriesRequest,
 )
 from powercontext.server.factory import create_server_app
-from powercontext.server.settings import AccessControlConfig, BearerAuthConfig, McpConfig, ServerSettings
+from powercontext.server.settings import AccessControlConfig, BearerAuthConfig, HttpConfig, McpConfig, ServerSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CODEX_PLUGIN = PROJECT_ROOT / "integrations" / "codex"
@@ -62,11 +63,15 @@ class _RunningServer:
         self.base_url = f"http://{host}:{port}"
         app = create_server_app(
             settings=ServerSettings(
+                http=HttpConfig(host=host, port=port),
+                runtime=RuntimeConfig(),
+                inference=InferenceConfig(),
                 auth=BearerAuthConfig(),
                 access=AccessControlConfig(mode="disabled"),
                 database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'memory-routing.db'}"),
                 mcp=McpConfig(enabled=True),
-            )
+            ),
+            scheduler_path=tmp_path / "scheduler.db",
         )
         self._server = uvicorn.Server(uvicorn.Config(app, log_level="critical", lifespan="on"))
         self._thread = threading.Thread(
@@ -260,8 +265,8 @@ def test_real_codex_routes_explicit_save_and_search_without_handoff_selector(
     _codex_executable()  # Resolve and validate the executable before allocating server state.
     timeout = pytestconfig.getoption("real_codex_timeout")
     server = _RunningServer(tmp_path)
-    server.start()
     try:
+        server.start()
         scope_id = _create_scope(server.base_url)
         with tempfile.TemporaryDirectory(prefix="codex-memory-routing-") as root_name:
             root = Path(root_name)

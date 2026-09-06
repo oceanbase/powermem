@@ -554,8 +554,9 @@ class _ArtifactPublicationApplication:
 
 
 class _DashboardScopeApplication:
-    async def list(self) -> tuple[SimpleNamespace, ...]:
-        return (
+    async def list(self, *, scope_ids=None) -> tuple[SimpleNamespace, ...]:
+        assert scope_ids is not None, "Dashboard queried unauthorized scope metadata"
+        scopes = (
             SimpleNamespace(
                 scope_id="scope-visible",
                 title="Visible",
@@ -569,6 +570,8 @@ class _DashboardScopeApplication:
                 parent_scope_id=None,
             ),
         )
+
+        return scopes if scope_ids is None else tuple(scope for scope in scopes if scope.scope_id in scope_ids)
 
 
 def test_access_api_and_handoff_pep_enforce_exact_receiver_visibility() -> None:

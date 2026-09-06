@@ -96,7 +96,8 @@ class CasbinAuthorizationProvider:
                 else None
             )
             if request.resource.type is AccessResourceType.ARTIFACT and owner is None:
-                decisions.append(AccessDecision(False, "artifact-owner-pending", revision))
+                reason = "artifact-owner-pending" if matched is not None else "no-matching-policy"
+                decisions.append(AccessDecision(False, reason, revision))
                 continue
             owner_allow = (
                 owner is not None

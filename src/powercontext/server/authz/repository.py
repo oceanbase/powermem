@@ -16,9 +16,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -46,7 +47,7 @@ from powercontext.limits import (
     MAX_POLICY_REVISION_LENGTH,
     MAX_SCOPE_ID_LENGTH,
 )
-from powercontext.server.authz.errors import AccessConflictError, AccessInvalidRequestError
+from powercontext.server.authz.errors import AccessConflictError, AccessInvalidRequestError, AccessUnavailableError
 from powercontext.server.authz.models import (
     ROLE_CARDINALITIES,
     AccessAction,
@@ -60,6 +61,7 @@ from powercontext.server.authz.models import (
     ArtifactOwnerRelation,
     CandidateOwnerAttestation,
     GroupRef,
+    HandoffReceiptIdentity,
     MemoryEntrySelector,
     PrincipalRef,
     ResourceRef,
@@ -92,6 +94,7 @@ ACCESS_BINDINGS_TABLE = Table(
     Column("selector_type", identity_string(32)),
     Column("selector_entry_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("role", identity_string(32), nullable=False),
+    Column("singleton_key", identity_string(64), unique=True),
     Column("granted_by_type", identity_string(16), nullable=False),
     Column("granted_by_id", identity_string(255), nullable=False),
     Column("granted_by_description", Text),
@@ -110,41 +113,31 @@ ACCESS_BINDINGS_TABLE = Table(
 )
 
 ACCESS_OWNERS_TABLE = Table(
-    "pc_access_artifact_owners",
+    "pc_access_owners",
     ACCESS_METADATA,
-    Column("resource_key_hash", identity_string(64), primary_key=True),
+    Column("owner_kind", identity_string(16), primary_key=True),
+    Column("object_key_hash", identity_string(64), primary_key=True),
     Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), nullable=False),
     Column("family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
-    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), nullable=False),
+    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
+    Column("candidate_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
+    Column("target_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("selector_type", identity_string(32)),
     Column("selector_entry_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
     Column("owner_type", identity_string(16), nullable=False),
     Column("owner_id", identity_string(255), nullable=False),
     Column("owner_description", Text),
-    Column("established_at", identity_string(32), nullable=False),
-    Column("policy_revision", identity_string(MAX_POLICY_REVISION_LENGTH), nullable=False),
+    Column("established_at", identity_string(32)),
+    Column("policy_revision", identity_string(MAX_POLICY_REVISION_LENGTH)),
     Column("idempotency_key", identity_string(255), nullable=False),
-)
-
-ACCESS_BINDING_LEASES_TABLE = Table(
-    "pc_access_binding_leases",
-    ACCESS_METADATA,
-    Column("resource_key_hash", identity_string(64), primary_key=True),
-    Column("role", identity_string(32), primary_key=True),
-    Column("binding_id", identity_string(64), unique=True),
-)
-
-ACCESS_CANDIDATE_OWNERS_TABLE = Table(
-    "pc_access_candidate_owners",
-    ACCESS_METADATA,
-    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
-    Column("candidate_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
-    Column("family", identity_string(MAX_ARTIFACT_FAMILY_LENGTH), nullable=False),
-    Column("owner_type", identity_string(16), nullable=False),
-    Column("owner_id", identity_string(255), nullable=False),
-    Column("owner_description", Text),
-    Column("target_artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH)),
-    Column("idempotency_key", identity_string(255), nullable=False),
+    CheckConstraint(
+        "(owner_kind = 'artifact' AND artifact_id IS NOT NULL AND candidate_id IS NULL "
+        "AND target_artifact_id IS NULL AND established_at IS NOT NULL AND policy_revision IS NOT NULL) "
+        "OR (owner_kind = 'candidate' AND candidate_id IS NOT NULL AND artifact_id IS NULL "
+        "AND selector_type IS NULL AND selector_entry_id IS NULL "
+        "AND established_at IS NULL AND policy_revision IS NULL)",
+        name="ck_pc_access_owners_kind",
+    ),
 )
 
 ACCESS_IDEMPOTENCY_TABLE = Table(
@@ -201,12 +194,13 @@ ACCESS_TABLES = (
     ACCESS_POLICY_HEADS_TABLE,
     ACCESS_BINDINGS_TABLE,
     ACCESS_OWNERS_TABLE,
-    ACCESS_CANDIDATE_OWNERS_TABLE,
-    ACCESS_BINDING_LEASES_TABLE,
     ACCESS_IDEMPOTENCY_TABLE,
     ACCESS_AUDIT_EVENTS_TABLE,
 )
 _POLICY_HEAD = "authorization"
+_RECEIPT_IDENTITY_OPERATION = "handoff.receipt.identity"
+_RECEIVER_IDENTITY_MATCHES = "receiver_identity_matches"
+_RECEIVER_IDENTITY_MISMATCH = "receiver_identity_mismatch"
 
 
 class RelationalAccessRepository:
@@ -214,6 +208,70 @@ class RelationalAccessRepository:
 
     def __init__(self, database: AsyncDatabase) -> None:
         self._database = database
+
+    async def get_receipt_identity(self, scope_id: str, source_id: str, /) -> HandoffReceiptIdentity | None:
+        async with self._database.transaction() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        select(ACCESS_AUDIT_EVENTS_TABLE).where(
+                            ACCESS_AUDIT_EVENTS_TABLE.c.event_id == _receipt_identity_event_id(scope_id, source_id),
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        if (
+            row["operation"] != _RECEIPT_IDENTITY_OPERATION
+            or row["scope_id"] != scope_id
+            or row["action"] != AccessAction.HANDOFF_ACKNOWLEDGE.value
+            or not row["allowed"]
+            or row["reason_code"] not in {_RECEIVER_IDENTITY_MATCHES, _RECEIVER_IDENTITY_MISMATCH}
+        ):
+            raise AccessUnavailableError("receipt_identity_pending")
+        return HandoffReceiptIdentity(
+            scope_id,
+            source_id,
+            _principal(row, "principal"),
+            row["reason_code"] == _RECEIVER_IDENTITY_MATCHES,
+        )
+
+    async def record_receipt_identity(self, identity: HandoffReceiptIdentity, /) -> HandoffReceiptIdentity:
+        existing = await self.get_receipt_identity(identity.scope_id, identity.source_id)
+        if existing is not None:
+            if existing != identity:
+                raise AccessConflictError("receipt-identity")
+            return existing
+        # The unique event ID reserves this Source's attribution across retries
+        # and concurrent Principals. Retain this audit event with the Receipt.
+        event = AccessAuditEvent(
+            cursor=None,
+            event_id=_receipt_identity_event_id(identity.scope_id, identity.source_id),
+            occurred_at=datetime.now(UTC),
+            request_id=None,
+            transport="server",
+            operation=_RECEIPT_IDENTITY_OPERATION,
+            principal=identity.principal,
+            actor=None,
+            action=AccessAction.HANDOFF_ACKNOWLEDGE,
+            resource=ResourceRef.artifact(identity.scope_id, family="handoff", artifact_id="handoff"),
+            allowed=True,
+            reason_code=_RECEIVER_IDENTITY_MATCHES
+            if identity.receiver_identity_matches
+            else _RECEIVER_IDENTITY_MISMATCH,
+            policy_revision=None,
+        )
+        try:
+            await self.append_audit(event)
+        except IntegrityError:
+            existing = await self.get_receipt_identity(identity.scope_id, identity.source_id)
+            if existing is None or existing != identity:
+                raise AccessConflictError("receipt-identity") from None
+            return existing
+        return identity
 
     async def policy_revision(self) -> str:
         async with self._database.transaction() as connection:
@@ -283,7 +341,10 @@ class RelationalAccessRepository:
             existing = (
                 (
                     await connection.execute(
-                        select(ACCESS_OWNERS_TABLE).where(ACCESS_OWNERS_TABLE.c.resource_key_hash == resource_hash)
+                        select(ACCESS_OWNERS_TABLE).where(
+                            ACCESS_OWNERS_TABLE.c.owner_kind == "artifact",
+                            ACCESS_OWNERS_TABLE.c.object_key_hash == resource_hash,
+                        )
                     )
                 )
                 .mappings()
@@ -310,7 +371,8 @@ class RelationalAccessRepository:
                 (
                     await connection.execute(
                         select(ACCESS_OWNERS_TABLE).where(
-                            ACCESS_OWNERS_TABLE.c.resource_key_hash == _digest(resource.key)
+                            ACCESS_OWNERS_TABLE.c.owner_kind == "artifact",
+                            ACCESS_OWNERS_TABLE.c.object_key_hash == _digest(resource.key),
                         )
                     )
                 )
@@ -328,9 +390,10 @@ class RelationalAccessRepository:
             existing = (
                 (
                     await connection.execute(
-                        select(ACCESS_CANDIDATE_OWNERS_TABLE).where(
-                            ACCESS_CANDIDATE_OWNERS_TABLE.c.scope_id == attestation.scope_id,
-                            ACCESS_CANDIDATE_OWNERS_TABLE.c.candidate_id == attestation.candidate_id,
+                        select(ACCESS_OWNERS_TABLE).where(
+                            ACCESS_OWNERS_TABLE.c.owner_kind == "candidate",
+                            ACCESS_OWNERS_TABLE.c.object_key_hash
+                            == _candidate_owner_key(attestation.scope_id, attestation.candidate_id),
                         )
                     )
                 )
@@ -343,9 +406,7 @@ class RelationalAccessRepository:
                     return decoded
                 raise AccessConflictError("candidate-owner")
             try:
-                await connection.execute(
-                    insert(ACCESS_CANDIDATE_OWNERS_TABLE).values(_candidate_owner_row(attestation))
-                )
+                await connection.execute(insert(ACCESS_OWNERS_TABLE).values(_candidate_owner_row(attestation)))
             except IntegrityError as error:
                 raise AccessConflictError("candidate-owner") from error
         return attestation
@@ -360,9 +421,9 @@ class RelationalAccessRepository:
             row = (
                 (
                     await connection.execute(
-                        select(ACCESS_CANDIDATE_OWNERS_TABLE).where(
-                            ACCESS_CANDIDATE_OWNERS_TABLE.c.scope_id == scope_id,
-                            ACCESS_CANDIDATE_OWNERS_TABLE.c.candidate_id == candidate_id,
+                        select(ACCESS_OWNERS_TABLE).where(
+                            ACCESS_OWNERS_TABLE.c.owner_kind == "candidate",
+                            ACCESS_OWNERS_TABLE.c.object_key_hash == _candidate_owner_key(scope_id, candidate_id),
                         )
                     )
                 )
@@ -377,6 +438,7 @@ class RelationalAccessRepository:
                 (
                     await connection.execute(
                         select(ACCESS_OWNERS_TABLE).where(
+                            ACCESS_OWNERS_TABLE.c.owner_kind == "artifact",
                             ACCESS_OWNERS_TABLE.c.owner_type == owner.type,
                             ACCESS_OWNERS_TABLE.c.owner_id == owner.id,
                         )
@@ -402,12 +464,10 @@ class RelationalAccessRepository:
                 if row is None:
                     raise AccessConflictError("idempotency-key")
                 return _decode_binding(row)
-            if ROLE_CARDINALITIES[binding.role] is AccessRoleCardinality.ONE_PER_RESOURCE:
-                await _claim_singleton_binding_lease(connection, binding, now=binding.created_at)
             revision = await self._increment_policy_revision(connection)
             created = replace(binding, policy_revision=str(revision))
+            await _insert_binding(connection, created)
             try:
-                await connection.execute(insert(ACCESS_BINDINGS_TABLE).values(_binding_row(created)))
                 await _record_idempotency(
                     connection,
                     actor=binding.granted_by,
@@ -444,13 +504,13 @@ class RelationalAccessRepository:
                 if row is None:
                     raise AccessConflictError("idempotency-key")
                 return _decode_binding(row)
+            revision = await self._increment_policy_revision(connection)
             current_row = await _binding_by_id(connection, binding_id, for_update=True)
             if current_row is None:
                 raise AccessConflictError("binding-version")
             current = _decode_binding(current_row)
             if current.version != expected_version or current.state is not AccessBindingState.ACTIVE:
                 raise AccessConflictError("binding-version")
-            revision = await self._increment_policy_revision(connection)
             revoked = replace(
                 current,
                 state=AccessBindingState.REVOKED,
@@ -470,12 +530,6 @@ class RelationalAccessRepository:
             )
             if result.rowcount != 1:
                 raise AccessConflictError("binding-version")
-            if ROLE_CARDINALITIES[current.role] is AccessRoleCardinality.ONE_PER_RESOURCE:
-                await connection.execute(
-                    update(ACCESS_BINDING_LEASES_TABLE)
-                    .where(ACCESS_BINDING_LEASES_TABLE.c.binding_id == binding_id)
-                    .values(binding_id=None)
-                )
             await _record_idempotency(
                 connection,
                 actor=revoked_by,
@@ -518,14 +572,15 @@ class RelationalAccessRepository:
                 if old_row is None or new_row is None:
                     raise AccessConflictError("idempotency-key")
                 return BindingReplacement(_decode_binding(old_row), _decode_binding(new_row))
+            revision = await self._increment_policy_revision(connection)
             old_row = await _binding_by_id(connection, request.binding_id, for_update=True)
             if old_row is None:
                 raise AccessConflictError("binding-version")
             old = _decode_binding(old_row)
             if old.version != request.expected_version or old.state is not AccessBindingState.ACTIVE:
                 raise AccessConflictError("binding-version")
-            has_singleton_lease = await _lock_singleton_binding_lease(connection, old)
-            revision = await self._increment_policy_revision(connection)
+            if _singleton_key(old) != old_row["singleton_key"]:
+                raise AccessConflictError("binding_cardinality_conflict")
             revoked = replace(
                 old,
                 state=AccessBindingState.REVOKED,
@@ -559,14 +614,8 @@ class RelationalAccessRepository:
             )
             if result.rowcount != 1:
                 raise AccessConflictError("binding-version")
+            await _insert_binding(connection, created)
             try:
-                await connection.execute(insert(ACCESS_BINDINGS_TABLE).values(_binding_row(created)))
-                await _transfer_singleton_binding_lease(
-                    connection,
-                    previous=old,
-                    current=created,
-                    required=has_singleton_lease,
-                )
                 await _record_idempotency(
                     connection,
                     actor=actor,
@@ -613,9 +662,9 @@ class RelationalAccessRepository:
         if allowed is not None:
             statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.allowed == allowed)
         if occurred_after is not None:
-            statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.occurred_at >= occurred_after.isoformat())
+            statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.occurred_at >= _timestamp(occurred_after))
         if occurred_before is not None:
-            statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.occurred_at < occurred_before.isoformat())
+            statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.occurred_at < _timestamp(occurred_before))
         if after is not None:
             statement = statement.where(ACCESS_AUDIT_EVENTS_TABLE.c.cursor > after)
         statement = statement.order_by(ACCESS_AUDIT_EVENTS_TABLE.c.cursor).limit(limit)
@@ -625,6 +674,8 @@ class RelationalAccessRepository:
 
     @staticmethod
     async def _increment_policy_revision(connection: Any) -> int:
+        # All Binding mutations acquire this row before locking Binding rows.
+        # Keeping one lock order also covers expiration and replacement races.
         current = await connection.scalar(
             select(ACCESS_POLICY_HEADS_TABLE.c.revision)
             .where(ACCESS_POLICY_HEADS_TABLE.c.name == _POLICY_HEAD)
@@ -647,6 +698,12 @@ class RelationalAccessRepository:
         if result.rowcount != 1:
             raise AccessConflictError("binding-version")
         return int(current) + 1
+
+
+def _receipt_identity_event_id(scope_id: str, source_id: str) -> str:
+    return _digest(
+        json.dumps((_RECEIPT_IDENTITY_OPERATION, scope_id, source_id), ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 async def _binding_by_id(connection: Any, binding_id: str, *, for_update: bool = False) -> Mapping[Any, Any] | None:
@@ -709,102 +766,33 @@ async def _record_idempotency(
     )
 
 
-async def _claim_singleton_binding_lease(connection: Any, binding: AccessBinding, *, now: datetime) -> None:
-    resource_hash = _digest(binding.resource.key)
-    lease = (
-        (
-            await connection.execute(
-                select(ACCESS_BINDING_LEASES_TABLE)
-                .where(
-                    ACCESS_BINDING_LEASES_TABLE.c.resource_key_hash == resource_hash,
-                    ACCESS_BINDING_LEASES_TABLE.c.role == binding.role.value,
-                )
-                .with_for_update()
+def _singleton_key(binding: AccessBinding) -> str | None:
+    if (
+        ROLE_CARDINALITIES[binding.role] is AccessRoleCardinality.ONE_PER_RESOURCE
+        and binding.state is AccessBindingState.ACTIVE
+    ):
+        return _digest(json.dumps((binding.resource.key, binding.role.value), separators=(",", ":")))
+    return None
+
+
+async def _insert_binding(connection: Any, binding: AccessBinding) -> None:
+    singleton_key = _singleton_key(binding)
+    if singleton_key is not None:
+        # Expiration releases only the slot; retain the historical Binding for
+        # lookup and idempotent replay. The unique key arbitrates concurrent claims.
+        await connection.execute(
+            update(ACCESS_BINDINGS_TABLE)
+            .where(
+                ACCESS_BINDINGS_TABLE.c.singleton_key == singleton_key,
+                ACCESS_BINDINGS_TABLE.c.expires_at <= _timestamp(binding.created_at),
             )
+            .values(singleton_key=None)
         )
-        .mappings()
-        .one_or_none()
-    )
-    if lease is None:
-        try:
-            await connection.execute(
-                insert(ACCESS_BINDING_LEASES_TABLE).values(
-                    resource_key_hash=resource_hash,
-                    role=binding.role.value,
-                    binding_id=binding.binding_id,
-                )
-            )
-        except IntegrityError as error:
-            raise AccessConflictError("binding_cardinality_conflict") from error
-        else:
-            return
-    prior_id = None if lease["binding_id"] is None else str(lease["binding_id"])
-    prior_row = None if prior_id is None else await _binding_by_id(connection, prior_id, for_update=True)
-    if prior_id is not None and prior_row is None:
-        # A concurrent transaction may have claimed the lease while its new
-        # Binding is not yet visible in this transaction's snapshot. Treat a
-        # non-null lease without a visible Binding as occupied; reclaiming it
-        # here can admit two active singleton Bindings on OceanBase.
-        raise AccessConflictError("binding_cardinality_conflict")
-    if prior_row is not None and _decode_binding(prior_row).active_at(now):
-        raise AccessConflictError("binding_cardinality_conflict")
-    result = await connection.execute(
-        update(ACCESS_BINDING_LEASES_TABLE)
-        .where(
-            ACCESS_BINDING_LEASES_TABLE.c.resource_key_hash == resource_hash,
-            ACCESS_BINDING_LEASES_TABLE.c.role == binding.role.value,
-            ACCESS_BINDING_LEASES_TABLE.c.binding_id.is_(None)
-            if prior_id is None
-            else ACCESS_BINDING_LEASES_TABLE.c.binding_id == prior_id,
-        )
-        .values(binding_id=binding.binding_id)
-    )
-    if result.rowcount != 1:
-        raise AccessConflictError("binding_cardinality_conflict")
-
-
-async def _lock_singleton_binding_lease(connection: Any, binding: AccessBinding) -> bool:
-    if ROLE_CARDINALITIES[binding.role] is not AccessRoleCardinality.ONE_PER_RESOURCE:
-        return False
-    lease = (
-        (
-            await connection.execute(
-                select(ACCESS_BINDING_LEASES_TABLE)
-                .where(
-                    ACCESS_BINDING_LEASES_TABLE.c.resource_key_hash == _digest(binding.resource.key),
-                    ACCESS_BINDING_LEASES_TABLE.c.role == binding.role.value,
-                )
-                .with_for_update()
-            )
-        )
-        .mappings()
-        .one_or_none()
-    )
-    if lease is None or lease["binding_id"] != binding.binding_id:
-        raise AccessConflictError("binding_cardinality_conflict")
-    return True
-
-
-async def _transfer_singleton_binding_lease(
-    connection: Any,
-    *,
-    previous: AccessBinding,
-    current: AccessBinding,
-    required: bool,
-) -> None:
-    if not required:
-        return
-    result = await connection.execute(
-        update(ACCESS_BINDING_LEASES_TABLE)
-        .where(
-            ACCESS_BINDING_LEASES_TABLE.c.resource_key_hash == _digest(previous.resource.key),
-            ACCESS_BINDING_LEASES_TABLE.c.role == previous.role.value,
-            ACCESS_BINDING_LEASES_TABLE.c.binding_id == previous.binding_id,
-        )
-        .values(binding_id=current.binding_id)
-    )
-    if result.rowcount != 1:
-        raise AccessConflictError("binding_cardinality_conflict")
+    try:
+        await connection.execute(insert(ACCESS_BINDINGS_TABLE).values(_binding_row(binding)))
+    except IntegrityError as error:
+        reason = "binding_cardinality_conflict" if singleton_key is not None else "idempotency-key"
+        raise AccessConflictError(reason) from error
 
 
 def _boundary_predicates(resource: ResourceRef, *, audit: bool = False) -> tuple[Any, ...]:
@@ -849,6 +837,7 @@ def _binding_row(binding: AccessBinding) -> dict[str, object | None]:
         "resource_key_hash": _digest(binding.resource.key),
         **_resource_row(binding.resource),
         "role": binding.role.value,
+        "singleton_key": _singleton_key(binding),
         **_subject_row("granted_by", binding.granted_by),
         "reason": binding.reason,
         "created_at": _timestamp(binding.created_at),
@@ -865,6 +854,7 @@ def _binding_row(binding: AccessBinding) -> dict[str, object | None]:
 def _binding_mutation_row(binding: AccessBinding) -> dict[str, object | None]:
     return {
         "state": binding.state.value,
+        "singleton_key": _singleton_key(binding),
         "version": binding.version,
         "policy_revision": binding.policy_revision,
         "revoked_at": None if binding.revoked_at is None else _timestamp(binding.revoked_at),
@@ -895,7 +885,8 @@ def _owner_row(relation: ArtifactOwnerRelation) -> dict[str, object | None]:
     resource = relation.resource
     selector = resource.selector
     return {
-        "resource_key_hash": _digest(resource.key),
+        "owner_kind": "artifact",
+        "object_key_hash": _digest(resource.key),
         "scope_id": resource.scope_id,
         "family": resource.family,
         "artifact_id": resource.artifact_id,
@@ -918,10 +909,16 @@ def _decode_owner(row: Mapping[Any, Any]) -> ArtifactOwnerRelation:
     )
 
 
+def _candidate_owner_key(scope_id: str, candidate_id: str) -> str:
+    return _digest(json.dumps((scope_id, candidate_id), ensure_ascii=False, separators=(",", ":")))
+
+
 def _candidate_owner_row(attestation: CandidateOwnerAttestation) -> dict[str, object | None]:
     return {
         "scope_id": attestation.scope_id,
         "candidate_id": attestation.candidate_id,
+        "owner_kind": "candidate",
+        "object_key_hash": _candidate_owner_key(attestation.scope_id, attestation.candidate_id),
         "family": attestation.family,
         **_subject_row("owner", attestation.proposed_owner),
         "target_artifact_id": None if attestation.target is None else attestation.target.artifact_id,
@@ -1072,7 +1069,7 @@ def _creation_hash(binding: AccessBinding) -> str:
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None:
         raise AccessInvalidRequestError("timestamp")
-    return value.isoformat()
+    return value.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 def _parse_timestamp(value: object) -> datetime:

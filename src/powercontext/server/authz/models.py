@@ -298,6 +298,16 @@ class ArtifactOwnerRelation:
 
 
 @dataclass(frozen=True, slots=True)
+class HandoffReceiptIdentity:
+    """Server-attested identity retained as an immutable Access audit event."""
+
+    scope_id: str
+    source_id: str
+    principal: PrincipalRef
+    receiver_identity_matches: bool
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateOwnerAttestation:
     """Server-attested proposed owner locked to one Review Candidate."""
 

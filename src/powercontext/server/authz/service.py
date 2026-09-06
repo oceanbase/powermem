@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -52,6 +53,7 @@ from powercontext.server.authz.models import (
     ArtifactOwnerRelation,
     CandidateOwnerAttestation,
     GroupRef,
+    HandoffReceiptIdentity,
     PrincipalRef,
     ResourceRef,
 )
@@ -239,6 +241,8 @@ class AuthorizationProvider(Protocol):
 class RelationshipReader(Protocol):
     """Read canonical relationship metadata without reading business content."""
 
+    async def get_receipt_identity(self, scope_id: str, source_id: str, /) -> HandoffReceiptIdentity | None: ...
+
     async def get_binding(self, binding_id: str, /) -> AccessBinding | None: ...
 
     async def list_bindings(self, request: BindingSearchRequest, /) -> tuple[AccessBinding, ...]: ...
@@ -250,6 +254,8 @@ class RelationshipReader(Protocol):
 
 class RelationshipWriter(Protocol):
     """Idempotent relationship mutations paired with a decision Provider."""
+
+    async def record_receipt_identity(self, identity: HandoffReceiptIdentity, /) -> HandoffReceiptIdentity: ...
 
     async def establish_artifact_owner(self, relation: ArtifactOwnerRelation, /) -> ArtifactOwnerRelation: ...
 
@@ -363,7 +369,11 @@ class BuiltinAuthorizationProvider:
                 else None
             )
             if request.resource.type is AccessResourceType.ARTIFACT and owner is None:
-                decisions.append(AccessDecision(False, "artifact-owner-pending", revision))
+                binding_decision = _binding_decision(
+                    bindings, request.action, request.resource, policy_revision=revision
+                )
+                reason = "artifact-owner-pending" if binding_decision.allowed else "no-matching-policy"
+                decisions.append(AccessDecision(False, reason, revision))
                 continue
             if (
                 owner is not None
@@ -451,6 +461,38 @@ class AccessControlService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._cursor_secret = cursor_secret or secrets.token_bytes(32)
         self._static_scope_principal = static_scope_principal
+
+    async def readiness(self) -> bool:
+        """Probe decisions and required stores without granting or caching authority."""
+
+        subject = PrincipalRef(type="service", id="powercontext-readiness")
+        server = ResourceRef.server(self.deployment_id)
+        artifact = ResourceRef.artifact("powercontext-readiness", family="handoff", artifact_id="handoff")
+        context = AccessAuditContext(transport="background", operation="access_readiness")
+        try:
+            async with asyncio.timeout(5):
+                decisions = tuple(
+                    await self.provider.check_batch((
+                        AccessRequest(subject, AccessAction.SERVER_OBSERVE, server, context),
+                        AccessRequest(subject, AccessAction.ARTIFACT_READ, artifact, context),
+                    ))
+                )
+                if len(decisions) != 2:
+                    return False
+                for decision in decisions:
+                    _validate_provider_decision(decision)
+                await self.audit.list_audit(resource=server, limit=1)
+                if self.relationships is not None:
+                    await self.relationships.get_binding("powercontext-readiness")
+                    await self.relationships.get_artifact_owner(artifact)
+                    await self.relationships.get_receipt_identity("powercontext-readiness", "powercontext-readiness")
+        except Exception:
+            return False
+        else:
+            return True
+
+    def uses_static_preset(self, principal: PrincipalRef | None) -> bool:
+        return self._static_scope_principal is not None and principal == self._static_scope_principal
 
     async def bootstrap_static_scope(
         self,
@@ -557,10 +599,10 @@ class AccessControlService:
         context: AccessAuditContext,
     ) -> tuple[AccessDecision, ...]:
         decisions = await self.check_batch(principal, checks, context=context)
-        if any(not decision.allowed and decision.reason_code == "artifact-owner-pending" for decision in decisions):
-            raise AccessUnavailableError("artifact_owner_pending")
-        if not all(decision.allowed for decision in decisions):
+        if any(not decision.allowed and decision.reason_code != "artifact-owner-pending" for decision in decisions):
             raise AccessDeniedError
+        if not all(decision.allowed for decision in decisions):
+            raise AccessUnavailableError("artifact_owner_pending")
         return decisions
 
     async def require_any(
@@ -764,6 +806,12 @@ class AccessControlService:
             else None
         )
         return AccessAuditPage(items=items, next_cursor=next_cursor)
+
+    async def record_receipt_identity(self, identity: HandoffReceiptIdentity) -> HandoffReceiptIdentity:
+        return await _access_call(self._relationship_writer().record_receipt_identity(identity))
+
+    async def receipt_identity(self, scope_id: str, source_id: str) -> HandoffReceiptIdentity | None:
+        return await _access_call(self._relationship_reader().get_receipt_identity(scope_id, source_id))
 
     async def establish_artifact_owner(
         self,

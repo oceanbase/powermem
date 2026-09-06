@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import Artifact, ArtifactRef
+from powercontext.builtin.artifacts.memory import MemoryCitation, MemoryEntryVersion, MemoryService
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.errors import (
@@ -39,10 +40,12 @@ from powercontext.builtin.persistence.errors import (
     StoredPayloadConflictError,
 )
 from powercontext.builtin.persistence.family_management import FamilyManagementWriterRegistry
+from powercontext.builtin.persistence.memory import RelationalMemoryBackend
 from powercontext.builtin.persistence.sources import SourceRepository, StoredSource
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACTS_TABLE,
+    MEMORY_ENTRY_VERSIONS_TABLE,
     SOURCE_JOURNAL_HEADS_TABLE,
     SOURCES_TABLE,
 )
@@ -58,6 +61,7 @@ from powercontext.builtin.records import (
     CursorExpiredError,
     InvalidBaseAccessRequestError,
     InvalidCursorError,
+    LogicalArtifactRecord,
     ScopeSummary,
     ScopeSummaryPage,
     SourceRecord,
@@ -235,6 +239,49 @@ class RelationalRecordService:
             except RepositoryNotFoundError:
                 raise BaseValueNotFoundError("artifact", (scope_id, family, artifact_id, revision)) from None
             return _artifact_record(scope_id, artifact)
+
+    async def current_memory_entry(self, scope_id: str, artifact_id: str, entry_id: str, /) -> MemoryEntryVersion:
+        """Resolve only one entry body, including entries in base-API Memory artifacts."""
+        backend = RelationalMemoryBackend(database=self._database, scope_id=scope_id, artifacts=self._artifacts)
+        memory = await backend.latest(artifact_id)
+        entry = next((value for value in memory.content.manifest.entries if value.entry_id == entry_id), None)
+        if entry is None:
+            raise BaseValueNotFoundError("artifact", (scope_id, artifact_id, entry_id))
+        citation = MemoryCitation(
+            memory_ref=memory.as_ref(), entry_id=entry_id, entry_version_id=entry.entry_version_id
+        )
+        return await MemoryService(backend=backend).validate_citation(citation)
+
+    async def logical_artifacts(self, scope_id: str, /) -> tuple[LogicalArtifactRecord, ...]:
+        """Read only catalog identities, including retained Memory entries."""
+
+        async with self._database.transaction() as connection:
+            artifacts = (
+                await connection.execute(
+                    select(ARTIFACT_HEADS_TABLE.c.family, ARTIFACT_HEADS_TABLE.c.artifact_id).where(
+                        ARTIFACT_HEADS_TABLE.c.scope_id == scope_id,
+                        ARTIFACT_HEADS_TABLE.c.family != "memory",
+                    )
+                )
+            ).all()
+            entries = (
+                await connection.execute(
+                    select(MEMORY_ENTRY_VERSIONS_TABLE.c.memory_artifact_id, MEMORY_ENTRY_VERSIONS_TABLE.c.entry_id)
+                    .where(
+                        MEMORY_ENTRY_VERSIONS_TABLE.c.scope_id == scope_id,
+                    )
+                    .distinct()
+                )
+            ).all()
+        return (
+            *(LogicalArtifactRecord(family=str(row.family), artifact_id=str(row.artifact_id)) for row in artifacts),
+            *(
+                LogicalArtifactRecord(
+                    family="memory", artifact_id=str(row.memory_artifact_id), entry_id=str(row.entry_id)
+                )
+                for row in entries
+            ),
+        )
 
     async def query_artifacts(
         self,

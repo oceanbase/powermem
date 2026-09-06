@@ -52,6 +52,9 @@ class _MemoryApplication:
         del scope_id
         return self
 
+    async def logical_artifacts(self):
+        return ()
+
     async def list(self, *, include_inactive: bool = False) -> MemoryEntriesPage:
         del include_inactive
         return MemoryEntriesPage(memory_ref=None)
@@ -94,7 +97,7 @@ def test_mcp_internal_bridge_preserves_principal_and_audits_mcp_transport() -> N
             )
             authentication = StaticBearerAuthenticationProvider("bob-token", BOB)
             app = create_app(
-                application=SimpleNamespace(memory=_MemoryApplication()),
+                application=SimpleNamespace(memory=_MemoryApplication(), records=_MemoryApplication()),
                 access_control=service,
                 authentication_provider=authentication,
                 middleware=(

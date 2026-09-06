@@ -22,6 +22,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, JsonValue
 
 from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.memory import MemoryEntryVersion
 from powercontext.sources import SourceRef
 
 BaseArtifactFamily = Literal["memory", "experience", "skill", "handoff"]
@@ -82,6 +83,14 @@ class ArtifactCollectionItem(_RecordModel):
     sources: tuple[SourceRef, ...]
     artifacts: tuple[ArtifactRef, ...]
     content_digest: str
+
+
+class LogicalArtifactRecord(_RecordModel):
+    """A committed logical identity, without content or revision selection."""
+
+    family: str
+    artifact_id: str
+    entry_id: str | None = None
 
 
 class ArtifactRecordPage(_RecordModel):
@@ -224,6 +233,10 @@ class RecordService(Protocol):
         revision: int,
         /,
     ) -> ArtifactRecord: ...
+
+    async def current_memory_entry(self, scope_id: str, artifact_id: str, entry_id: str, /) -> MemoryEntryVersion: ...
+
+    async def logical_artifacts(self, scope_id: str, /) -> tuple[LogicalArtifactRecord, ...]: ...
 
     async def query_artifacts(
         self,

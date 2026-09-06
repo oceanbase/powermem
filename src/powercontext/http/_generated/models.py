@@ -212,6 +212,15 @@ class ResolveScopeBindingRequest(BaseModel):
     binding_keys: Annotated[list[ScopeBindingKey], Field(validate_default=True)] = []
 
 
+class CandidatePermissions(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    can_revise: StrictBool
+    can_approve: StrictBool
+    can_reject: StrictBool
+
+
 class ApproveArtifactCandidateRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -1300,15 +1309,6 @@ class ReplaceExperienceArtifactRequest(BaseModel):
     content: ExperienceProposal
 
 
-class SourceRecord(BaseModel):
-    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    source_type: SourceType
-    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern="^[\\x21-\\x7E]+$")]
-    content: Annotated[Any, Field(description="Persisted canonical JSON content.")]
-    position: Annotated[StrictInt, Field(ge=1)]
-    content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
-
-
 class SourceTypeReference(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -1872,6 +1872,14 @@ class ArtifactRevision(BaseModel):
     sources: list[SourceTypeReference]
     artifacts: list[ArtifactReference]
     content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+
+
+class HandoffReceiptIdentity(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    principal: AccessPrincipal
+    receiver_identity_matches: StrictBool
 
 
 class Capabilities(BaseModel):
@@ -2469,6 +2477,21 @@ class ReplaceSkillArtifactRequest(BaseModel):
     content: SkillProposal
 
 
+class SourceRecord(BaseModel):
+    receipt_identity: Annotated[
+        HandoffReceiptIdentity | None,
+        Field(
+            description="Server-owned identity attestation when this Source contains an enforced-mode Handoff Receipt."
+        ),
+    ] = None
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    source_type: SourceType
+    source_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern="^[\\x21-\\x7E]+$")]
+    content: Annotated[Any, Field(description="Persisted canonical JSON content.")]
+    position: Annotated[StrictInt, Field(ge=1)]
+    content_digest: Annotated[StrictStr, Field(pattern="^sha256:[0-9a-f]{64}$")]
+
+
 class ArtifactFamilyAccessCapability(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -2508,6 +2531,10 @@ class ArtifactCandidate(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
+    permissions: Annotated[
+        CandidatePermissions | None,
+        Field(description="Current Principal permissions in enforced mode; advisory and checked again on mutation."),
+    ] = None
     candidate_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
     version: Annotated[StrictInt, Field(ge=1)]
     family: CandidateFamily
@@ -2849,6 +2876,7 @@ class HandoffAcknowledgement(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
+    receipt_identity: HandoffReceiptIdentity | None = None
     resolution: HandoffResolution
     receipt: WorkSourceReceipt
 

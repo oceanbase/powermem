@@ -105,6 +105,7 @@ from powercontext.builtin.records import (
     ArtifactRecordPage,
     ArtifactWrite,
     BaseValueConflictError,
+    LogicalArtifactRecord,
     RecordService,
     ScopeSummaryPage,
     SourceRecord,
@@ -389,6 +390,14 @@ class ScopedRecordApplication:
                 artifact_id,
                 revision,
             )
+
+    async def current_memory_entry(self, artifact_id: str, entry_id: str, /) -> MemoryEntryVersion:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._runtime._records().current_memory_entry(self.scope_id, artifact_id, entry_id)
+
+    async def logical_artifacts(self) -> tuple[LogicalArtifactRecord, ...]:
+        async with self._runtime._scope_operation(self.scope_id):
+            return await self._runtime._records().logical_artifacts(self.scope_id)
 
     async def query_artifacts(
         self,

@@ -3093,8 +3093,44 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "additionalProperties": False,
                 "type": "object",
             },
+            "CandidatePermissions": {
+                "properties": {
+                    "can_revise": {"type": "boolean"},
+                    "can_approve": {"type": "boolean"},
+                    "can_reject": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["can_revise", "can_approve", "can_reject"],
+            },
+            "HandoffReceiptIdentity": {
+                "properties": {
+                    "principal": {"$ref": "#/components/schemas/AccessPrincipal"},
+                    "receiver_identity_matches": {"type": "boolean"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["principal", "receiver_identity_matches"],
+                "description": "Server-owned attestation stored separately from the immutable untrusted Receipt.",
+            },
             "ArtifactCandidate": {
                 "properties": {
+                    "permissions": {
+                        "$ref": "#/components/schemas/CandidatePermissions",
+                        "description": "Current "
+                        "Principal "
+                        "permissions "
+                        "in "
+                        "enforced "
+                        "mode; "
+                        "advisory "
+                        "and "
+                        "checked "
+                        "again "
+                        "on "
+                        "mutation.",
+                        "nullable": True,
+                    },
                     "candidate_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
                     "version": {"type": "integer", "minimum": 1.0},
                     "family": {"$ref": "#/components/schemas/CandidateFamily"},
@@ -3673,6 +3709,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "HandoffAcknowledgement": {
                 "properties": {
+                    "receipt_identity": {"$ref": "#/components/schemas/HandoffReceiptIdentity", "nullable": True},
                     "resolution": {"$ref": "#/components/schemas/HandoffResolution"},
                     "receipt": {"$ref": "#/components/schemas/WorkSourceReceipt"},
                 },
@@ -5746,6 +5783,21 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "SourceRecord": {
                 "properties": {
+                    "receipt_identity": {
+                        "$ref": "#/components/schemas/HandoffReceiptIdentity",
+                        "description": "Server-owned "
+                        "identity "
+                        "attestation "
+                        "when "
+                        "this "
+                        "Source "
+                        "contains "
+                        "an "
+                        "enforced-mode "
+                        "Handoff "
+                        "Receipt.",
+                        "nullable": True,
+                    },
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "source_type": {"type": "string", "enum": ["content"]},
                     "source_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": "^[\\x21-\\x7E]+$"},
