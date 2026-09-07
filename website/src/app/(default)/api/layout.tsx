@@ -14,24 +14,15 @@
  * limitations under the License.
  */
 
-import { notFound } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { Provider } from '@/components/provider';
-import { isLanguage, languages } from '@/lib/i18n';
+import { DocsLayout } from 'fumadocs-ui/layouts/docs';
+import { apiSource } from '@/lib/openapi-source';
+import { baseOptions } from '@/lib/site';
 
-export function generateStaticParams() {
-  return languages.map((lang) => ({ lang }));
-}
-
-export default async function LanguageLayout({
-  children,
-  params,
-}: {
-  children: ReactNode;
-  params: Promise<{ lang: string }>;
-}) {
-  const { lang } = await params;
-  if (!isLanguage(lang)) notFound();
-
-  return <Provider lang={lang}>{children}</Provider>;
+export default function ApiLayout({ children }: { children: ReactNode }) {
+  return (
+    <DocsLayout tree={apiSource.getPageTree()} {...baseOptions('en')} i18n={false}>
+      {children}
+    </DocsLayout>
+  );
 }

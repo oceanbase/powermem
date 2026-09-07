@@ -14,29 +14,20 @@
  * limitations under the License.
  */
 
-import type { ReactNode } from 'react';
 import { notFound } from 'next/navigation';
-import type { Root } from 'fumadocs-core/page-tree';
-import { DocsLayout } from 'fumadocs-ui/layouts/docs';
-import { isLanguage } from '@/lib/i18n';
-import { baseOptions } from '@/lib/site';
-import { source } from '@/lib/source';
+import type { ReactNode } from 'react';
+import { Provider } from '@/components/provider';
+import { isLanguage, languages } from '@/lib/i18n';
+import { siteMetadata } from '@/lib/metadata';
+import '../../global.css';
 
-function getDocumentationTree(lang: string): Root {
-  const tree = source.getPageTree(lang);
-  const documentation = tree.children.find(
-    (node) => node.type === 'folder' && node.index?.url.replace(/\/$/, '') === `/${lang}/docs`,
-  );
+export const metadata = siteMetadata;
 
-  if (!documentation || documentation.type !== 'folder') return tree;
-
-  return {
-    ...tree,
-    children: documentation.children,
-  };
+export function generateStaticParams() {
+  return languages.map((lang) => ({ lang }));
 }
 
-export default async function DocumentationLayout({
+export default async function LanguageLayout({
   children,
   params,
 }: {
@@ -47,8 +38,10 @@ export default async function DocumentationLayout({
   if (!isLanguage(lang)) notFound();
 
   return (
-    <DocsLayout tree={getDocumentationTree(lang)} {...baseOptions(lang)}>
-      {children}
-    </DocsLayout>
+    <html lang={lang} suppressHydrationWarning>
+      <body>
+        <Provider lang={lang}>{children}</Provider>
+      </body>
+    </html>
   );
 }
