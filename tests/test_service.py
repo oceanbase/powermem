@@ -1086,6 +1086,27 @@ def test_launchd_stop_waits_until_bootout_removes_the_loaded_job(
     run.assert_called_once_with("bootout", "gui/501/com.oceanbase.powercontext")
 
 
+def test_launchd_start_kickstarts_a_newly_bootstrapped_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = LaunchdUserAdapter(home=tmp_path, uid=501)
+    monkeypatch.setattr(
+        adapter,
+        "loaded_registration",
+        lambda: ManagerRegistration(ManagerOwnershipState.NOT_LOADED),
+    )
+    run = Mock()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    adapter.start(reload_definition=False)
+
+    assert run.call_args_list == [
+        (("bootstrap", "gui/501", str(adapter.artifact_path)), {}),
+        (("kickstart", "gui/501/com.oceanbase.powercontext"), {}),
+    ]
+
+
 @pytest.mark.parametrize("corruption", ["fragment", "path", "arguments", "marker", "metadata"])
 def test_systemd_loaded_registration_requires_matching_fragment_command_and_metadata(
     tmp_path: Path,
