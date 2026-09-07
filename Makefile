@@ -10,6 +10,14 @@ skills-install: ## Install recommended agent skills from skills-lock.json
 	@npx skills experimental_install
 	@echo "Restart Codex to pick up new skills."
 
+.PHONY: notebooks
+notebooks: ## Open the PowerContext feature tutorials and complete team workflow in JupyterLab.
+	@uv run --locked --group notebooks jupyter lab --notebook-dir=examples/jupyter
+
+.PHONY: notebooks-test
+notebooks-test: ## Execute provider-free tutorials in fresh kernels; use ARGS for models, HTTP, and browser.
+	@uv run --locked --group notebooks python examples/jupyter/run.py $(ARGS)
+
 .PHONY: check
 check: integration-manifest-check ## Run code quality tools.
 	@echo "🚀 Checking lock file consistency with 'pyproject.toml'"
